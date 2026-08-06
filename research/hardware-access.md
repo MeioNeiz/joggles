@@ -21,25 +21,54 @@ how to restore.
 
 ## What is on the board
 
-From FCC internal photographs of TR19xx-family boards (the same vendor's LED mask and
-glasses products share a PCB lineage). *derived*: our own unit has not been opened, so
-confirm before soldering.
+There is no published teardown of any product in this family. The only PCB imagery in
+existence is in FCC filings by Shenzhen Shining Bright Technology, [fccid.io/2AOLN](https://fccid.io/2AOLN).
+
+| FCC ID | Product | Relevance |
+| --- | --- | --- |
+| `2AOLNSL-004` | **Funky Glasses** | our generation. [Internal photos](https://fccid.io/2AOLNSL-004/Internal-Photos/Internal-Photos-4549066) |
+| `2AOLNSL-012` | Shining Glasses, 2021 | sibling, and its debug header is the legible one |
+| `2AOLN-16` | Shining Mask | different, two-chip architecture. Do not transfer its findings |
+
+On the `SL-004` board. *derived* from the photographs; our own unit has not been opened.
 
 | Item | Observation |
 | --- | --- |
-| SoC | `U2`, QFN32, roughly 5 x 5 mm. Package matches PAN1020 QFN32 (25 GPIO) |
-| Crystal | `Y2`, immediately below the SoC |
+| SoC | `U2`, QFN32, roughly 5 x 5 mm. Matches the PAN1020 QFN32 package |
+| Crystals | two, `Y2` beside the SoC. Reported as 16 MHz plus 32.768 kHz |
 | Debug header | five gold-plated through-pads in a row, silkscreened |
 | Board marking | `TR1905H012-07`, dated `20191015` |
+| Design | single chip driving the matrix directly, PCB antenna |
 
-The five pads carry silkscreen legends reading, left to right, `RST`, a clock label
-ending in `K`, a data label ending in `D`, `G`, and `VD`. That is the conventional
-Chinese-vendor programming header: **RST, CLK, DAT, GND, VDD**. Nothing needs to be
-probed blind and nothing needs to be tapped off the QFN.
+Only lot and date codes are legible on the SoC (`1932BA...`), never a part number, even
+upscaled. The Panchip identification rests on firmware and SDK evidence, not a marking.
 
-The board number is worth noting for its own sake: the vendor's firmware is
-`TR1906R04`, the board is `TR1905H012`, so `TR19xx` is a product-family scheme rather
-than a chip name. It says nothing about the silicon.
+### The debug header
+
+**Read the silkscreen on your own board. The pad order differs between revisions.**
+
+| Board | Order, left to right |
+| --- | --- |
+| `SL-012` (2021) | header marked `DBG1`: `GND`, `RST`, `CLK`, `DAT`, `3V`, with `BLE_ICE` nearby |
+| `SL-004` (ours) | `RST`, `CLK`, `DAT`, `G`, `VD` |
+
+The `SL-012` legends are the fully legible ones and settle what the five signals are.
+`BLE_ICE` is Panchip's own nomenclature: the datasheet calls the SWD pins `ICE_CLK` and
+`ICE_DAT`. So this is a documented, deliberate programming header, not a happy accident,
+and nothing needs to be probed blind or tapped off the QFN.
+
+The board number is worth noting for its own sake: the firmware is `TR1906R04` and the
+board is `TR1905H012`, so `TR19xx` is the ODM's product-series scheme. It says nothing
+about the silicon.
+
+### Correction to the 26 MHz crystal
+
+`README.md` and `firmware-image-format.md` record a 26 MHz crystal, inferred from the
+constant `0x018cba80` (26,000,000) in the firmware's tail config block. That constant is
+almost certainly the **internal** oscillator and PLL reference: Panchip's SDK sets
+`__HIRC` and `__PLL` to 26 MHz while defining the external `__HXT` as 16 MHz, and the
+FCC photographs show a 16 MHz part. Treat the external crystal as 16 MHz until someone
+reads the marking on our own board. *unverified* either way.
 
 ## Pin mapping, if the pads turn out not to match
 
@@ -183,6 +212,24 @@ one" is a good hypothesis and worth nothing at all when the register is `CONFIG0
 
 Keep read scripts and write scripts in separate files, invoked separately, so a flash
 write procedure is never loaded during a read session.
+
+## Nobody has done this before
+
+Worth knowing before budgeting time. A survey of every public project on this hardware
+family found **no full flash dump of a Panchip unit and no custom firmware flashed to
+any device in the family**. Two partial hardware results exist, both on the *other*,
+two-chip mask architecture (AT32F415 plus SPI flash), so neither transfers:
+
+- One person reached SWD on an AT32F415 mask and found the application read-protected.
+  Their words: disabling the protection wipes the application, and they recovered only
+  the bootloader. Their annotated test-point photo album has since been deleted.
+- One person dumped the 16 MB `PY25Q128HA` SPI content flash of a mask, which holds
+  animation data, not MCU firmware.
+
+The useful reading of the first result is as a warning about the *class* of risk.
+Artery's read-protection behaviour says nothing about Panchip's, which nobody has
+tested. It does mean that if our part turns out to be locked, "unlock it" and "keep the
+firmware" are probably mutually exclusive, so the dump has to come first.
 
 ## Genuinely open
 

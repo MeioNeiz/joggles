@@ -6,6 +6,7 @@
   "trustedDependencies": ["@abandonware/noble", "@abandonware/bluetooth-hci-socket"],
   "scripts": {
     "test": "bun test packages/core",
-    "cli": "bun run packages/cli/src/index.ts"
+    "cli": "bun run packages/cli/src/index.ts",
+    "ota-check": "bun run packages/cli/src/ota-check.ts"
   }
 }

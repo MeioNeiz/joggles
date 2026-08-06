@@ -11,7 +11,7 @@ the lean-file rule, and why corrections are recorded rather than deleted.
 
 - Bun + TS only. No Python, no Go
 - `packages/core` pure TS, zero deps. `packages/cli` noble/CoreBluetooth
-- `bun test` | `bun cli <text|edge|off|bench|stress>`
+- `bun test` | `bun cli <text|edge|off|bench|stress>` | `bun run ota-check <image>`
 
 ## Mental model
 
@@ -74,6 +74,8 @@ hardware and used by `getAnim19`.
 
 ## Don't
 
+- Send any image that has not passed `ota.check()` (`bun run ota-check <image>`).
+  It is the gate, and it already encodes every limit below
 - Relink firmware, exceed 66 KB, or send OTA `type 2`. Flashing a *patched stock*
   app image over BLE is safe: the OTA stages at `0x29400` and never erases the
   running app, so an aborted transfer costs nothing and we can re-flash stock

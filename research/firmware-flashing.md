@@ -60,13 +60,20 @@ scanning for literals missed it. *verified* two independent ways, below.
 | `0x3c000` - `0x3c5ff` | 1.5 KB | saved user content (`DATS` uploads) | derived |
 | `0x3c800` | 8 B | saved-content metadata | derived |
 | `0x3d800` / `0x3da00` | 512 B each | section info page and its backup | verified |
-| `0x3dc00` - `0x3dbff` | 8 KB | **bootloader.** Never written by an OTA | derived |
+| `0x3dc00` - `0x3fbff` | 8 KB | **bootloader**, per the SDK. Never written by an OTA | derived |
 | `0x3f000` | 4 KB | vendor data sector, referenced 7 times, purpose unknown | derived |
 | `0x100000` | - | LDROM window | derived |
 
 The vendor kept Panchip's stock layout and dropped their saved-content buffer at
 `0x3c000`, immediately above the staging bank. That adjacency is the source of the
 size hazard below.
+
+**One unresolved overlap.** The SDK's nominal 8 KB bootloader at `0x3dc00` runs to
+`0x3fbff`, which swallows the `0x3f000` sector the application uses as its own data
+store. Both cannot be true as stated. Either the vendor's bootloader is smaller than
+the stock reservation, or `0x3f000` is carved out of it. Until a dump settles this,
+treat everything from `0x3d800` upward as untouchable, which the size limits below
+already enforce.
 
 ## What the device actually does
 
@@ -179,6 +186,42 @@ Note that the vendor app is not a recovery route: it offers an OTA only when the
 version major is under 10, and ours reports 10. Our own client has no such gate, and
 the **device** does not check versions at all. *verified*: the start handler never
 compares them.
+
+## Safeguards, in code
+
+Everything above that can be enforced mechanically is enforced in
+`packages/core/src/ota.ts`. Its flash-map constants deliberately mirror Panchip's
+`section_cfg.h`, names included, so the two can be diffed by eye.
+
+    bun run ota-check <image.bin> [stock.bin]
+
+Touches no Bluetooth and writes nothing, so it is always safe to run. It exits 1 on a
+fatal finding, and `ota.check()` is the gate any future BLE write path must pass
+before sending a byte.
+
+What it refuses outright:
+
+| Finding | Why |
+| --- | --- |
+| `softdevice-image`, `unknown-type` | type 2 aims the bootloader at the BLE stack; anything else leaves a stale flag |
+| `erases-bootloader` | over 83,968 bytes, recoverable only by SWD |
+| `erases-info-page` | over 76,800 bytes, destroys saved content and the info pages |
+| `device-rejects` | at or above the device's own `0x19000` bound |
+| `not-word-aligned` | trailing bytes are dropped, so the CRC then fails |
+| `crc-mismatch`, `size-mismatch` | container is internally inconsistent |
+| `bad-stack-pointer`, `bad-entry-vector`, `entry-out-of-range` | will not boot; an image linked for the wrong base is the classic brick |
+| `wrong-variant` | the image is the other hardware revision |
+| `protected-region` | the patch edits something that makes a bad flash unrecoverable |
+
+That last one is the important one. Pass the stock image as the second argument and it
+diffs the two, refusing any edit that lands in the image head, the FMC flash driver,
+the OTA handler, the payload descrambler or the GATT table. Those regions are what let
+us flash our way out of a mistake, so editing them is self-sealing. There is an
+`allowProtectedRegions` option and deliberately no CLI flag for it: reaching it should
+require editing code.
+
+Both stock images are used as test fixtures where `firmware/` is present, so the guard
+is checked against real vendor data rather than only synthetic images.
 
 ## Hard don'ts
 

@@ -476,6 +476,14 @@ Still open:
 - [ ] `DATS` type 2 with a payload wider than 72 bytes
 - [ ] `LEDFIRST`/`LEDSECOND` lens select, and the odd bit's meaning
 - [ ] `COLR`, `LEVL`, `POWR`: real opcodes in the app's tables, never emitted
+- [ ] **A third service, `ae00`.** A GATT dump of a device in this family shows
+      `ae00` alongside `fff0` and `fd00`, with `ae01` write-without-response and
+      `ae02` notify. `ae02` answered a raw ping with
+      `0153c83c1af70dade3829bda9a972c60cc`. Absent from the Panchip SDK and from our
+      own notes, and nobody has investigated it. Free to enumerate, zero risk
+- [ ] **`TIME`**, an opcode captured as ciphertext by a mask project with no known
+      meaning. Not in our command table. Related: that project reports `DATCP` can
+      carry a unix timestamp argument, which we send bare
 
 ## Further reading
 

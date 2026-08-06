@@ -347,9 +347,21 @@ What this repository adds:
   publicly.
 - The `DATS`/`DATCP` upload subsystem traced end to end from app source, documented
   in `research/vendor-app-protocol.md`.
+- The **disassembled OTA state machine**, in `research/firmware-flashing.md`. No
+  public project has touched the `fd00` path.
 
-Nobody has published anything about the region below `abs 0x16800`, a flash dump of
-a TR1906 unit, or work on the Panchip `fd00` OTA for this product.
+The two halves of the container have been solved separately in public and never
+together. `Jhan-vasquez-dev/shining-glasses` documents exactly our header layout,
+naming the same fields from `com.cdbwsoft.library.panchip.FileInfo`, then records a
+careful dead end: it never found the XOR key. `Blato58/MaskApp` decoded the payload
+but never named the header fields past the first word. The derivation of the pad from
+the seed `0x37627996` appears nowhere public at all.
+
+Nobody has published a flash dump of any Panchip unit in this family, and nobody has
+flashed modified firmware to one. One repo, `tayred06/shining-mask-controller`, claims
+to have done so; its own logs show every probe going unanswered, and its "flasher"
+writes to the display characteristics rather than the OTA service. Treat its success
+claims as false.
 
 Note on UUID provenance, since it misleads people: `0xfee9` plus the
 `d44bc439-...` characteristics are the **Quintic QPP** transparent-serial profile
@@ -366,11 +378,14 @@ Cheapest and safest first:
    present in the same discovery pass. Zero risk.
 2. Send OTA control opcode `01` on `fd02` and read the version reply. Zero flash
    risk, and it confirms the OTA stack responds.
-3. Find the SWD pads and take a **full 256 KB dump**. This is the gate for
-   everything else: it yields the bootloader, answers the staging-bank question, and
-   is the only possible recovery image.
-4. Only then consider a re-pack: build at base `abs 0x16800`, scramble from body
-   `0`, CRC-32 the plaintext, and fill in `codeSize`, `crc32`, the version fields
-   and `type = 1`.
+3. Stage a few KB and disconnect without sending opcode `03`. Nothing is committed,
+   and it confirms staging on real hardware.
+4. Re-flash the stock `TR1906R04-10_OTA.bin` to exercise the whole path with no
+   novel-code risk, then patch the stock plaintext in place, keeping the length
+   identical, and re-pack with `type = 1`.
+
+An SWD dump is **no longer the gate**, only insurance, and the two things it uniquely
+buys are the BLE stack and the bootloader. See `research/hardware-access.md`. Full
+procedure and the size limits that matter: `research/firmware-flashing.md`.
 
 Rendering improvements need none of this. See `research/vendor-app-protocol.md`.
