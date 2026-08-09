@@ -41,7 +41,15 @@ const LEVELS = [1, 2, 3, 4, 5]
 
 type Status = { kind: 'busy' | 'good' | 'bad'; message: string } | null
 
-export function Connected({ glasses, onClose }: { glasses: Glasses; onClose: () => void }) {
+export function Connected({
+  glasses,
+  onClose,
+  onDraw,
+}: {
+  glasses: Glasses
+  onClose: () => void
+  onDraw: () => void
+}) {
   const [identity, setIdentity] = useState<Identity | null>(null)
   const [text, setText] = useState('JOGGLES')
   const [scroll, setScroll] = useState(true)
@@ -156,9 +164,16 @@ export function Connected({ glasses, onClose }: { glasses: Glasses; onClose: () 
                 : 'stock firmware'}
           </Text>
         </View>
-        <Pressable onPress={onClose} hitSlop={12} disabled={busy}>
-          <Text style={[styles.close, busy && styles.disabled]}>Disconnect</Text>
-        </Pressable>
+        {/* Both disabled mid-save: leaving this screen while `deliver` is streaming
+            would strand a DATS handshake the device is still waiting to complete. */}
+        <View style={styles.actions}>
+          <Pressable onPress={onDraw} hitSlop={12} disabled={busy}>
+            <Text style={[styles.close, busy && styles.disabled]}>Draw</Text>
+          </Pressable>
+          <Pressable onPress={onClose} hitSlop={12} disabled={busy}>
+            <Text style={[styles.close, busy && styles.disabled]}>Disconnect</Text>
+          </Pressable>
+        </View>
       </View>
 
       <Preview
@@ -193,10 +208,13 @@ export function Connected({ glasses, onClose }: { glasses: Glasses; onClose: () 
             <Choice on={dir === 0} onPress={() => setDir(0)} label="Dir 0" />
             <Choice on={dir === 1} onPress={() => setDir(1)} label="Dir 1" />
           </Row>
-          {/* Which way each byte actually moves the content is unverified: the vendor
-              app's table calls 0 left and nobody has watched it. Labelling them left
-              and right would be inventing the answer. */}
-          <Text style={styles.note}>Which way each direction scrolls is unconfirmed</Text>
+          {/* Dir 0 was watched on hardware 2026-08-09 and moves the text right to
+              left. Dir 1 has never been sent, so it stays unlabelled: the vendor
+              app's table calls 0 left, which the one observation we have contradicts,
+              so predicting 1 from it would be inventing the answer. */}
+          <Text style={styles.note}>
+            Dir 0 scrolls right to left. Which way Dir 1 goes is unconfirmed
+          </Text>
           <Row label="Speed">
             {PRESETS.map((s) => (
               <Choice
@@ -292,6 +310,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   name: { color: '#eee', fontSize: 17 },
   kind: { color: '#888', fontSize: 13, marginTop: 2 },
+  actions: { flexDirection: 'row', gap: 16 },
   close: { color: '#4ade80', fontSize: 15 },
   disabled: { color: '#444' },
   input: {
