@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
 import {
+  IMAGE_ACCEPT_CEILING,
   MAX_IMAGE_COLUMNS,
   MAX_SAVED_COLUMNS,
   assertValid,
@@ -13,6 +14,7 @@ import {
   modeArgs,
   normalise,
   pad,
+  savedType,
   text,
   toGrid,
   width,
@@ -106,25 +108,51 @@ test('check rejects a saved payload past the bisected ceiling', () => {
 })
 
 /**
- * The two ceilings are unrelated numbers and neither derives from the other.
+ * Type 2 has two different limits and `check` enforces the smaller one.
  *
- * The device buffers a type 2 column as a 32-bit word and wraps the counter at 384
- * (`abs 0x18634`), so 383 columns is the ceiling however many bytes that is. Dividing
- * type 1's measured 1480-byte budget by three bytes per column gives 493, which the
- * device answers with `ERROR` after taking the whole upload. That figure was in this
- * file until 2026-08-09.
+ * The device answers `DATCPOK` to 383 columns and `ERROR` to 384, because it buffers
+ * an image column as a 32-bit word and wraps at 384 (`abs 0x18634`). But it only ever
+ * *shows* 24 of them: a 383-column upload with a lit head and a black tail left the
+ * panel lit and unchanging for two minutes. Both on hardware 2026-08-09, though the
+ * first is a device reply and the second is a person watching a panel not change -
+ * `MAX_IMAGE_COLUMNS` carries the caveat and this test enforces it regardless,
+ * because 24 is the conservative direction.
+ *
+ * So content is bounded by what displays, not by what is accepted. Two wrong numbers
+ * have already been in this file: 493, from dividing type 1's byte budget by three,
+ * and 383, from taking the accept ceiling as a content limit.
  */
-test('the greyscale ceiling is 383 columns, not 493 and not 740', () => {
+test('type 2 content is bounded by the 24 columns that display, not the 383 accepted', () => {
   expect(maxColumns(TYPE_IMAGE)).toBe(MAX_IMAGE_COLUMNS)
-  expect(MAX_IMAGE_COLUMNS).toBe(383)
+  expect(MAX_IMAGE_COLUMNS).toBe(24)
+  expect(IMAGE_ACCEPT_CEILING).toBe(383)
   expect(maxColumns(TYPE_TEXT)).toBe(740)
-  for (const cols of [493, 740]) {
-    expect(check({ ...text('X'), bitmap: grid(9, cols, 2) }).join()).toContain(
-      '383 columns',
-    )
-  }
-  expect(check({ ...text('X'), bitmap: grid(9, 383, 2) })).toEqual([])
-  expect(check({ ...text('X'), bitmap: grid(9, 384, 2) }).length).toBe(1)
+
+  expect(check({ ...text('X'), bitmap: grid(9, 24, 2) })).toEqual([])
+  // Accepted by the device and invisible past column 24, which is the trap.
+  const wide = check({ ...text('X'), bitmap: grid(9, 383, 2) })
+  expect(wide.length).toBe(1)
+  expect(wide.join()).toContain('shows only 24 columns')
+  expect(wide.join()).toContain('383')
+})
+
+/**
+ * The rejection above has to name the way out, because `check` exists to be shown
+ * to a user and one grey pixel is what puts them here: `savedType` sends any
+ * greyscale content down type 2, so a wide grey scroll reads as impossible when it
+ * is one option away from working. Asserted rather than left to the message,
+ * because the escape and the sentence promising it can drift apart.
+ */
+test('a wide grey scroll is rejected with the remedy, and the remedy works', () => {
+  const wideGrey = { ...text('X'), bitmap: grid(9, 200, 2) }
+  expect(savedType(wideGrey)).toBe(TYPE_IMAGE)
+  expect(check(wideGrey).join()).toContain('type 1')
+
+  expect(check(wideGrey, { type: TYPE_TEXT })).toEqual([])
+  const forced = encodeSaved(wideGrey, { type: TYPE_TEXT })
+  expect(forced.type).toBe(TYPE_TEXT)
+  expect(forced.columns).toBe(200)
+  expect(forced.flattened).toBe(true)
 })
 
 // Forcing type 1 halves the cost, so the byte check has to be told, or it rejects

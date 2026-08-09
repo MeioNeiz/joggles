@@ -10,7 +10,12 @@
  *
  *     live      960b, 24 columns, 4 grey levels, no flash, gone at power off
  *     saved 1   960a + DATCP, 740 columns, monochrome, five page erases, survives
- *     saved 2   960a + DATCP, 383 columns, greyscale, no flash, gone at power off
+ *     saved 2   960a + DATCP, 24 columns, greyscale, no flash, gone at power off
+ *
+ * Type 2 is the odd one: it looks like the saved route and behaves like the live
+ * one, except that its whole 24-column frame lands in a single handshake instead of
+ * 24 paced writes, so it is the only path that puts arbitrary greyscale pixels on
+ * the panel with no left-to-right sweep. It costs a full DATS round trip to do it.
  *
  * **The route does not decide persistence, the DATS type does**, and `savedType`
  * picks the type from the content. Only type 1 reaches the flash writer at
@@ -65,21 +70,50 @@ export interface Content {
 export const MAX_SAVED_BYTES = 1480
 
 /**
- * Type 2's ceiling, which is a column count and not a share of the bytes above.
+ * The widest type 2 upload the device will **accept**, which is not the widest one
+ * it will **show**. For content, want `MAX_IMAGE_COLUMNS`.
  *
  * The device buffers an image column as a **32-bit word**, not as the 3 bytes it
  * costs on the wire, and wraps that column counter at 384 (`abs 0x18634`). Storing
  * column 384 resets it to 0, so `DATCP` compares 0 against the 384 it expected and
  * answers `ERROR` once the whole upload has been sent. *verified* on hardware
- * 2026-08-09: 383 columns answers `DATCPOK` and 384 answers `ERROR`.
+ * 2026-08-09, and **read off the wire**: 383 columns answers `DATCPOK`, 384 answers
+ * `ERROR`. Device replies, not an interpretation, so this number is as solid as
+ * anything here gets.
  *
  * *Corrected: this was 493, from dividing 1480 by three bytes per column. That
  * model is wrong twice over - the budget was measured at type 1's stride, and type
  * 2 spends four buffer bytes per column rather than three.*
  */
-export const MAX_IMAGE_COLUMNS = 383
+export const IMAGE_ACCEPT_CEILING = 383
 
-/** Columns the device will take, per DATS type. 740 for text, 383 for an image. */
+/**
+ * Type 2 columns that actually reach the panel, which is the panel itself.
+ *
+ * **A type 2 upload wider than the panel is accepted and then 94% invisible.**
+ * `set_mode(26)` copies 96 bytes, 24 columns, out of the staging buffer
+ * (`abs 0x21f26`) and the frame the `DATCP` arm builds is 24 wide too. Tested on
+ * hardware 2026-08-09: 383 columns whose first 24 were lit and whose other 359 were
+ * black left the panel lit and unchanging for two minutes.
+ *
+ * **Weigh this one before building on it.** Unlike `IMAGE_ACCEPT_CEILING`, which is
+ * a device reply, this was *read off the panel by a person*, and it is a **null
+ * observation**: "nothing changed for two minutes" and "nobody was watching closely
+ * enough" look identical. The disassembly says the same thing, which is why it is
+ * believed, but a scroll slower than the `SPEED` ladder implies, or one that pauses
+ * between passes the way type 1 does, would also produce this report. An earlier
+ * pass of the same test using a *dim* rather than black tail came back "not certain".
+ *
+ * So this is the number `check` enforces, and that is the conservative direction: if
+ * it is wrong, we decline to send width that turns out to have worked, rather than
+ * shipping content that silently vanishes. Raise it here if anyone overturns the
+ * finding. `IMAGE_ACCEPT_CEILING` stays separate because "the device says `ERROR` at
+ * 384" and "the device shows nothing past 24" are different facts, held to different
+ * standards of proof, and conflating them is how the 493 mistake happened.
+ */
+export const MAX_IMAGE_COLUMNS = COLS
+
+/** Columns worth sending, per DATS type. 740 for text, 24 for an image. */
 export const maxColumns = (type: number): number =>
   type === dats.TYPE_IMAGE ? MAX_IMAGE_COLUMNS : Math.floor(MAX_SAVED_BYTES / 2)
 
@@ -243,12 +277,19 @@ export function check(content: Content, opts: EncodeOptions = {}): string[] {
     out.push(`live route holds ${MAX_LIVE_COLUMNS} columns, got ${cols}`)
   }
   if (route === 'saved') {
-    // Per type, because the two ceilings are unrelated numbers: type 1 runs out of
-    // bytes and type 2 runs out of buffer words.
+    // Per type, because the two limits are unrelated and reached differently: type 1
+    // runs out of bytes, and type 2 is accepted far past the point it stops being
+    // displayed, so its limit is what the panel shows rather than what DATCP allows.
     const type = opts.type ?? savedType(content)
     const limit = maxColumns(type)
     if (cols > limit) {
-      out.push(`saved route holds ${limit} columns at type ${type}, got ${cols}`)
+      out.push(
+        type === dats.TYPE_IMAGE
+          ? `type 2 shows only ${limit} columns, got ${cols}; the device accepts up ` +
+            `to ${IMAGE_ACCEPT_CEILING} and displays none of the rest. Send it as ` +
+            `type 1 to keep the width, which drops the grey`
+          : `saved route holds ${limit} columns at type ${type}, got ${cols}`,
+      )
     }
   }
   if (route === 'live' && motion.kind === 'scroll') {

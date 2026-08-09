@@ -17,7 +17,7 @@ complete opcode inventory, and every hard limit.
 | Saved content slots | one buffer per type, no slot index in the protocol | verified |
 | Content types | `1` = text, `2` = DIY image | verified |
 | Which type persists | **type 1 only**; type 2 stops in RAM, shown by mode 26 | verified |
-| Usable ceiling | 743 columns type 1 (1486 B), 383 columns type 2 | 740 and 383 verified |
+| Usable ceiling | type 1 **740 columns** (1480 B), the firmware's own bound being 743; type 2 accepts 383 and **shows 24** | 740, 383 and 24 verified; 743 derived |
 | Displaying type 2 | automatic on `DATCPOK`; any later `MODE` discards it, permanently | verified |
 | Upload length field | 16-bit, so up to 65535 bytes announced | verified |
 | Device-side wide scroll | real: the app uploads ~200 columns and scrolls them unattended | verified |
@@ -181,7 +181,7 @@ Worth keeping straight, because they are easy to confuse:
   the live column format with its `[04][index]` header removed**, which the vendor
   states twice: `DiyAgreement.getDiyBytes0924` and `LedView.getRealTime` pack the same
   canvas with the same ladders. The vendor allocates a fixed `byte[72]` and so only ever
-  sends 24 columns; the firmware will take 383
+  sends 24 columns; the firmware will take 383 and display the first 24 of them
 
 ## Wide buffers are real
 
@@ -224,8 +224,18 @@ the result it was trying to measure.
 and the type 1 text was back after it. Mechanism and addresses: "`DATCP` is an exact-match
 gate" in `research/firmware-internals.md`.
 
-Still open: `set_mode(26)` copies only 24 columns to the live buffer, so how much of a
-383-column type 2 image is ever visible is untested.
+**And the width turned out not to buy anything.** Only the first 24 columns of a type 2
+image are ever displayed: 383 columns with a lit head and a black tail left the panel lit
+and unchanging for two minutes. `set_mode(26)` copies 96 bytes and nothing scrolls the
+rest. So the answer to "can a saved drawing be wider than the panel" is yes for type 1 and
+**no for type 2**, and the 383 figure bounds what is accepted rather than what is useful.
+
+*Confidence, because the three rows in the table above and this paragraph are not equally
+solid.* The table is device replies on the wire. This paragraph is a person reporting that
+a panel did not change, which is a null observation and the weakest thing in this
+document's `DATS` material. It agrees with the disassembly and is believed, but see "Only
+the first 24 columns of a type 2 image are ever visible" in
+`research/firmware-internals.md` for how it could still be wrong and what would settle it.
 
 ## Corrections to the command table
 

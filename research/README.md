@@ -10,7 +10,7 @@ self-contained: read only the one that matches your task.
 | `firmware-internals.md` | **What the firmware is.** The UART display module, the on-board button, the real 11-opcode dispatcher, the animation engine, the `DATCP` gate and why type 2 never reaches flash, what a patch buys | Deciding whether to patch at all, or hunting a capability |
 | `hardware-access.md` | SWD pads, chip package, probes, dump and restore procedure | **Now the recovery route, not insurance.** See `brick-2026-08-08.md` |
 | `firmware-image-format.md` | OTA container format, firmware internals, SoC identity | Inspecting or rebuilding an image. **Its flash map and risk verdict are superseded by `firmware-flashing.md`** |
-| `vendor-app-protocol.md` | Saved content (`DATS`/`DATCP`), wide buffers, complete opcode inventory, hard limits. **Measured upload ceiling and pacing floor**: 740 columns not 768, 6 ms not 50 ms, both on the `960a` bulk stream only and live per-column pacing unmeasured. **Type 2 is 383 columns and never persists** | Improving rendering, driving the display, or sizing and pacing an upload |
+| `vendor-app-protocol.md` | Saved content (`DATS`/`DATCP`), wide buffers, complete opcode inventory, hard limits. **Measured upload ceiling and pacing floor**: 740 columns not 768, 6 ms not 50 ms, both on the `960a` bulk stream only and live per-column pacing unmeasured. **Type 2 is accepted to 383 columns, displays only the first 24, and never persists** | Improving rendering, driving the display, or sizing and pacing an upload |
 | `ota-codec.ts` | Runnable decode/encode/verify for OTA images | Inspecting or rebuilding a firmware image |
 | `tools/fwtool.ts` | Analysis workbench: `peek`, `xref`, `callers`, `modes`, `render`, `regions` | Any question about the image. **Read its header before scanning by hand** |
 | `tools/patch.ts` | Builds a patched image from stock: `expect`-the-old-bytes edits, appends into free flash, assertions on bytes a patch depends on | Writing any firmware patch |
@@ -18,6 +18,8 @@ self-contained: read only the one that matches your task.
 | `tools/ext.ts` | The `JGX1` extension block and the one dispatcher hook that reaches it | Adding a sub-command to our firmware |
 | `tools/build-firmware.ts` | `bun run build-firmware`: stock + hook + extension + crew key + rename | Producing an image to flash |
 | `tools/mkelf.ts` | Minimal ELF wrapper so llvm-objdump will disassemble the raw image | Reproducing the disassembly |
+| `tools/swd-recon.sh` | The read-only OpenOCD session: `probe`, `ids`, `diag`, `dump`. **Holds no write or erase command by construction** | When the SWD probe is attached |
+| `tools/dumpcheck.ts` | `bun run dumpcheck`: is a dump trustworthy, and what device state does it show? Validates by diffing `abs 0x16800` against `ota.plaintext()`, which proves the dump and the flash map at once | Reading anything `swd-recon.sh dump` produced |
 
 The client half of the extension protocol is `packages/core/src/jgx.ts`, and `tools/ext.ts`
 imports its constants rather than restating them, so the firmware and the app cannot drift.

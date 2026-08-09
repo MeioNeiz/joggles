@@ -146,9 +146,10 @@ export function decodeBitmap(payload: Uint8Array): number[][] {
  * are *verified* on hardware.
  *
  * The vendor allocates a fixed `byte[72]` and so only ever sends 24 columns. Wider
- * works: 383 columns is the ceiling (`content.MAX_IMAGE_COLUMNS`), *verified* on
- * hardware, with the levels checked by eye off the panel rather than only against
- * `decodeImage`.
+ * is *accepted* to 383 (`content.IMAGE_ACCEPT_CEILING`) and `ERROR` above it, but
+ * only the first 24 are ever displayed, so encoding more is storing bytes nobody
+ * sees; `content.MAX_IMAGE_COLUMNS` is that 24. Both *verified* on hardware, the
+ * levels checked by eye off the panel rather than only against `decodeImage`.
  */
 export const IMAGE_COLUMN_BYTES = 3
 

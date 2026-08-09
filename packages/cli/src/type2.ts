@@ -6,6 +6,14 @@
  *   bun run packages/cli/src/type2.ts ceiling --yes    24 ok, 383 ok, 384 ERROR
  *   bun run packages/cli/src/type2.ts watch --yes      does it display, and when
  *   bun run packages/cli/src/type2.ts show --yes       upload, then power-cycle
+ *   bun run packages/cli/src/type2.ts wide --yes       how much of 383 is visible
+ *
+ * **`ceiling` reads its answer off the wire; the other three read it off the panel,
+ * by eye.** `wide` is the weakest of the set, because its answer is "the panel did
+ * not change", which an inattentive minute produces just as readily. Anything
+ * re-running it should put a distinct marker every 24 columns so a window other than
+ * the head is identifiable rather than merely dark, and watch longer than two
+ * minutes. `content.MAX_IMAGE_COLUMNS` is sized on that result.
  *
  * **What was being tested.** `DATCP` at `abs 0x182e0` answers `DATCPOK` only when a
  * running counter equals what `DATS` predicted. Type 2 counts columns, one 32-bit
@@ -81,9 +89,9 @@ const nonce = () => Date.now() & 0xfff
 async function cmdCeiling(): Promise<void> {
   console.log(`${LADDER.length} type 2 uploads: ${LADDER.join(', ')} columns.`)
   console.log(
-    `Charged to the wear budget as ${LADDER.length * ERASES_PER_SAVE} erases, though`,
+    `Charged to the wear budget as ${LADDER.length * ERASES_PER_SAVE} erases, though ` +
+      'type 2 is verified to write none. See SaveOpts.type.\n',
   )
-  console.log('though type 2 is verified to write none. See SaveOpts.type.\n')
   if (!confirmed) {
     console.error('Refusing without --yes.')
     process.exit(1)
@@ -95,7 +103,7 @@ async function cmdCeiling(): Promise<void> {
   const results: Array<[number, string, string]> = []
   for (const [i, cols] of LADDER.entries()) {
     const glasses = await open()
-    const predicted = cols <= content.MAX_IMAGE_COLUMNS ? 'DATCPOK' : 'ERROR'
+    const predicted = cols <= content.IMAGE_ACCEPT_CEILING ? 'DATCPOK' : 'ERROR'
     const { status, reply } = await glasses.save(testCard(cols, nonce()), {
       type: dats.TYPE_IMAGE,
       blockSleep: 12,
@@ -251,7 +259,7 @@ function solidCard(): number[][] {
  * black is not.
  */
 async function cmdWide(): Promise<void> {
-  const cols = content.MAX_IMAGE_COLUMNS
+  const cols = content.IMAGE_ACCEPT_CEILING
   console.log(`Uploading ${cols} columns: first 24 LIT, remaining ${cols - 24} DARK.`)
   console.log('Then 120s of watching, with no MODE sent (MODE would discard it).\n')
   console.log('  stays lit, never goes dark -> only the first 24 columns are visible')

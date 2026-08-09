@@ -661,17 +661,27 @@ RAM buffer and selects this same mode 26. See the next section.*
 **Now *verified* on hardware**, 2026-08-09 on `GLASSES-125B37`, stock. The section was
 written from disassembly and every prediction in it was then run:
 
-| Run | Predicted | Observed |
-| --- | --- | --- |
-| type 2, 24 columns (72 B), the vendor's own width | `DATCPOK` | `DATCPOK` |
-| type 2, 383 columns (1149 B) | `DATCPOK` | `DATCPOK` |
-| type 2, 384 columns (1152 B) | `ERROR` | `ERROR` |
-| panel after a type 2 `DATCPOK`, nothing else sent | shows the image | shows the image |
-| the same image after a power cycle | gone, type 1 content back | gone, type 1 content back |
+| Run | Predicted | Observed | Read from |
+| --- | --- | --- | --- |
+| type 2, 24 columns (72 B), the vendor's own width | `DATCPOK` | `DATCPOK` | wire |
+| type 2, 383 columns (1149 B) | `DATCPOK` | `DATCPOK` | wire |
+| type 2, 384 columns (1152 B) | `ERROR` | `ERROR` | wire |
+| panel after a type 2 `DATCPOK`, nothing else sent | shows the image | shows the image | eye |
+| panel after a `MODE` on top of that | type 1 content | type 1 content | eye |
+| the same image after a power cycle | gone, type 1 back | gone, type 1 back | eye |
+| 383 columns, lit head and black tail, 2 minutes | only the head shows | never went dark | **eye, null** |
 
-Reproduce with `bun run packages/cli/src/type2.ts <ceiling|watch|show> --yes`. Adjacent
-widths with opposite outcomes, landing exactly on the 384-word wrap, is the part worth
-keeping: it pins the mechanism and not merely the number.
+Reproduce with `bun run packages/cli/src/type2.ts <ceiling|watch|show|wide> --yes`.
+Adjacent widths with opposite outcomes, landing exactly on the 384-word wrap, is the part
+worth keeping: it pins the mechanism and not merely the number.
+
+**The last column is not decoration.** Three of these are device replies and carry no
+interpretation. Four were read off a pair of glasses by a person, and the last one is a
+*null* observation, where "nothing changed" and "nobody watched closely enough" produce
+the same report. The positive eye results are much stronger than that: the observer
+described a bright half and a dim half unprompted, which is the image that was sent and
+not something the unit had shown before. Weight them accordingly, and see "Only the first
+24 columns" below for what would harden the weak one.
 
 It also explains a hardware measurement that had no explanation before, and it changes
 what "save" means.
@@ -737,10 +747,43 @@ nothing switches back.** So a type 2 image is displayable exactly once, at uploa
 any `MODE` after it discards it. Anything driving both types has to send them in that
 order or not at all.
 
+### Only the first 24 columns of a type 2 image are ever visible
+
+*verified*, but **the weakest result in this section, and the one most worth re-running
+before anything expensive rests on it.** The disassembly and the panel agree, which is
+why it is believed; the panel half is one person reporting that nothing changed for two
+minutes, and a null observation by eye cannot distinguish "it never scrolled" from "the
+scroll was slower than the watch, or paused between passes the way type 1 does, or the
+observer looked away". A first pass of the same test with a *dim* rather than black tail
+came back "not certain, but it feels like it is bright all the time", which is what
+prompted the black-tail re-run.
+
+**What would harden it**, in rough order of cost: put a distinct marker every 24 columns
+so any window other than the head is identifiable rather than merely dark; watch for five
+minutes rather than two; or drop the eye out of it entirely by patching `set_mode(26)`'s
+96-byte copy and seeing whether the rest becomes reachable. Until then, treat "24 is the
+visible width" as firm enough to size content by and not firm enough to build a feature
+on refuting.
+
+It is the finding that decides what type 2 is for.
+
 `set_mode(26)` copies **96 bytes, 24 columns**, from the staging buffer to the live column
-buffer (`abs 0x21f26`), so how much of a 383-column type 2 upload is reachable on the
-panel is a separate question from whether the upload is accepted. Untested: only 24-column
-images have been looked at.
+buffer (`abs 0x21f26`), and the frame the `DATCP` arm builds is 24 wide as well
+(`abs 0x221de`). So a wide type 2 upload is accepted in full and displayed only at its
+head. Tested by uploading 383 columns whose first 24 were lit and whose remaining 359 were
+black: the panel stayed lit and unchanging for two minutes. Nothing scrolls it, and the
+one command that might have, `MODE`, discards the image instead.
+
+**So the two type 2 numbers are 383 and 24, and they are for different things.** 383 is
+where `DATCP` starts answering `ERROR`. 24 is the widest image that does anything. Sizing
+content by the first is how you build a payload that is accepted, acknowledged, and 94%
+invisible; `packages/core/src/content.ts` keeps both, as `IMAGE_ACCEPT_CEILING` and
+`MAX_IMAGE_COLUMNS`, and bounds content by the second.
+
+What this leaves type 2 as: **a whole 24-column greyscale frame delivered in one
+handshake**, with no left-to-right sweep, at the cost of a full `DATS` round trip. That is
+a genuinely different thing from the live channel, which needs 24 paced writes and visibly
+wipes, and from the rhythm channel, which is atomic but draws only bars.
 
 **Consequence for the client.** `content.savedType()` picks the type from whether the
 content has grey in it, so one grey pixel decides whether a save persists. Anything that
@@ -1026,12 +1069,13 @@ answer `DATCPOK`.*
 ## Unverified
 
 - Whether 24 columns span both lenses or the module mirrors them. One hardware test.
-- How much of a type 2 upload wider than 24 columns actually reaches the panel.
-  `set_mode(26)` copies 96 bytes, so a 383-column image is accepted and stored in full
-  while probably only its first 24 columns are ever visible. One run settles it: upload
-  a 383-column image whose columns 24 onwards differ visibly from its first 24.
-  *Graduated: the 383 ceiling and the RAM-only behaviour were both verified on
-  2026-08-09, and the section above records the runs.*
+- **That a type 2 image shows only its first 24 columns.** Hardware agreed with the
+  disassembly, but that half is a single null observation by eye, so it is the one
+  `DATS` result worth re-running: a distinct marker every 24 columns makes any window
+  other than the head identifiable rather than merely dark, and five minutes beats two.
+  `content.MAX_IMAGE_COLUMNS` is sized on it. *Graduated 2026-08-09 and now firm: the
+  383-column accept ceiling, the RAM-only behaviour, and that type 2 displays itself on
+  `DATCPOK`. The section above records every run and which were read from the wire.*
 - Whether the display module accepts any command beyond `0xa0`-`0xa5` and `0x4a`.
 - `LOOP` versus `LOOA`.
 - Whether the speculative-decrypt trick works for multi-column writes.
