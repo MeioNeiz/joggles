@@ -309,6 +309,109 @@ test('a failed write stops the sender, and idle reports why', async () => {
   await expect(s.idle()).rejects.toThrow('disconnected')
 })
 
+test('a dead pump is reported, without anyone having awaited anything', async () => {
+  const t = new MockTransport()
+  const boom = new Error('disconnected')
+  t.write = () => Promise.reject(boom)
+  const seen: unknown[] = []
+  const s = new LiveSender(t, { pacing: 0, onError: (e) => seen.push(e) })
+
+  // The case the callback exists for: a canvas pushes a touch and awaits nothing,
+  // so `idle()` rejecting reaches nobody and only `stopped` would have told it.
+  s.draw(4, 3)
+  await tick()
+  expect(seen).toEqual([boom])
+  expect(s.stopped).toBe(true)
+})
+
+test('the report happens once, however many touches follow it', async () => {
+  const t = new MockTransport()
+  t.write = () => Promise.reject(new Error('disconnected'))
+  const seen: unknown[] = []
+  const s = new LiveSender(t, { pacing: 0, onError: (e) => seen.push(e) })
+
+  s.draw(4, 3)
+  await tick()
+  s.draw(4, 8)
+  s.set(lit(1))
+  s.clear()
+  s.refresh()
+  await tick()
+  // A finger still on the glass is not a second disconnection.
+  expect(seen).toHaveLength(1)
+})
+
+test('stopping is not a failure, so nothing is reported', async () => {
+  const t = new Gated()
+  const seen: unknown[] = []
+  const s = new LiveSender(t, { pacing: 0, onError: (e) => seen.push(e) })
+
+  s.set(lit(1, 2, 3))
+  await tick()
+  const stopped = s.stop()
+  t.release()
+  await stopped
+
+  expect(seen).toEqual([])
+  expect(s.error).toBe(null)
+})
+
+test('a handler that throws does not take the sender down with it', async () => {
+  const t = new MockTransport()
+  const boom = new Error('disconnected')
+  t.write = () => Promise.reject(boom)
+  const s = new LiveSender(t, {
+    pacing: 0,
+    onError: () => {
+      throw new Error('the error banner blew up')
+    },
+  })
+
+  s.draw(4, 3)
+  await tick()
+  expect(s.error).toBe(boom)
+  // `stop()` awaits the pump, so this rejects if the handler's throw escaped `die()`
+  // - and the write error would have been replaced by the handler's own.
+  await s.stop()
+})
+
+test('a flush whose ack fails kills the sender too', async () => {
+  const t = new Gated()
+  const seen: unknown[] = []
+  const s = new LiveSender(t, { pacing: 0, onError: (e) => seen.push(e) })
+
+  s.set(lit(1, 2, 3, 4))
+  await tick()
+  const stopped = s.stop()
+  t.release()
+  await stopped
+  await tick()
+
+  // The ack runs outside the pump, so its failure has its own way to be missed:
+  // without this the sender would report itself healthy over a dead connection.
+  const boom = new Error('link dropped')
+  t.write = () => Promise.reject(boom)
+  await expect(s.flush()).rejects.toThrow('link dropped')
+  expect(s.error).toBe(boom)
+  expect(seen).toEqual([boom])
+})
+
+test('a rejection with no error object still counts as a failure', async () => {
+  const t = new MockTransport()
+  // ble-plx and noble both hand back whatever the platform gave them, so an empty
+  // rejection is not hypothetical. Branching on the truthiness of the value would
+  // resolve `idle()` as though the batch had landed, over a connection that is gone.
+  t.write = () => Promise.reject(undefined)
+  const seen: unknown[] = []
+  const s = new LiveSender(t, { pacing: 0, onError: (e) => seen.push(e) })
+
+  s.draw(4, 3)
+  const idle = s.idle()
+  await expect(idle).rejects.toBeUndefined()
+  expect(s.stopped).toBe(true)
+  expect(seen).toEqual([undefined])
+})
+
 test('stop leaves the batch where it was, and flush acks what got out', async () => {
   const t = new Gated()
   const s = new LiveSender(t, { pacing: 0 })

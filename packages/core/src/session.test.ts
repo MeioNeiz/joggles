@@ -190,3 +190,20 @@ function helloReply(version: number, capabilities: number): Uint8Array {
   return block
 }
 
+
+test('live() hands out a sender on this connection, with the session cipher', async () => {
+  const crew = p.cipher(new Uint8Array(16).fill(7))
+  const t = new MockTransport(crew)
+  const g = await Glasses.attach(t, 'JOGGLES-1234', { pacing: 0, cipher: crew })
+
+  const sender = g.live({ pacing: 0 })
+  sender.draw(4, 12)
+  await sender.idle()
+
+  // Decrypted with the crew key, so a sender that had defaulted to the vendor one
+  // would write a frame whose column index is not 12 - which is how a mixed fleet
+  // fails: no error anywhere, and a panel that simply does not change.
+  const written = t.to(p.CHAR_BULK_B)
+  expect(written).toHaveLength(1)
+  expect(p.body(written[0])[0]).toBe(12)
+})

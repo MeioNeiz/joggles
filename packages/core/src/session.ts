@@ -17,6 +17,7 @@ import * as dats from './dats.js'
 import { Grid } from './display.js'
 import * as jgx from './jgx.js'
 import * as p from './protocol.js'
+import { LiveSender, type SenderOptions } from './sender.js'
 import type { Transport } from './transport.js'
 
 export const sleep = (ms: number): Promise<void> =>
@@ -266,6 +267,30 @@ export class Glasses {
   async commandRaw(frame: Uint8Array): Promise<void> {
     await this.send(p.CHAR_BULK_B, frame, false)
     await sleep(this.pacing)
+  }
+
+  /**
+   * A `LiveSender` for this connection, with the cipher already settled.
+   *
+   * The transport and the cipher are private here and a drawing screen needs
+   * both, so without this every host would rebuild them: the transport by being
+   * handed down beside the session, and the cipher by re-running the advert-name
+   * rule. Getting that second one wrong on a crew unit is silent - the frames are
+   * garbage the device ignores, and the panel simply does not change.
+   *
+   * **Call it after `begin()`.** The sender assumes the live buffer starts blank,
+   * which is true because `SMVEW 01` clears it, and that is what `begin()` sends.
+   *
+   * From then on the sender owns the live buffer. Do not interleave `show()` with
+   * it - the two keep separate ideas of what the panel was last told - and
+   * remember that any `MODE` discards what it drew.
+   */
+  live(opts: Omit<SenderOptions, 'cipher'> = {}): LiveSender {
+    return new LiveSender(this.transport, {
+      pacing: this.pacing,
+      ...opts,
+      cipher: this.cipher,
+    })
   }
 
   /** Enter DIY mode with the panel on, ready for pixel writes. */

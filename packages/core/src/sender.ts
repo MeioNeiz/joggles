@@ -54,6 +54,21 @@ export interface SenderOptions {
    * advert name. Frames written with the wrong key are garbage the device ignores.
    */
   cipher?: p.Cipher
+  /**
+   * Called once if a write fails and the sender dies. Not called by `stop()`.
+   *
+   * Without it a dead sender is silent to anyone who does not await something.
+   * `draw()` returns `this` and `set()` returns `this`, so a canvas pushing a touch
+   * per frame never learns that nothing has reached the panel since the link
+   * dropped: the drawing on the phone and the drawing on the glasses simply
+   * diverge, which reads as broken hardware. Throwing from `draw()` instead would
+   * put a try/catch around every touch handler for a condition that is the
+   * connection's, not the touch's.
+   *
+   * A handler that throws is swallowed. It is UI code and the sender is already
+   * dead; taking the pump down with it would only lose the reason.
+   */
+  onError?: (err: unknown) => void
   /** Injectable so tests need no timers. Nothing else should pass this. */
   sleep?: (ms: number) => Promise<void>
 }
@@ -111,11 +126,16 @@ export class LiveSender {
 
   private problem: unknown = null
 
+  /** Separate from `problem`, so a rejection whose value is falsy still reports once. */
+  private died = false
+
   private readonly pacing: number
 
   private readonly cipher: p.Cipher
 
   private readonly nap: (ms: number) => Promise<void>
+
+  private readonly onError?: (err: unknown) => void
 
   constructor(
     private transport: Transport,
@@ -124,6 +144,7 @@ export class LiveSender {
     this.pacing = opts.pacing ?? 18
     this.cipher = opts.cipher ?? p.vendor
     this.nap = opts.sleep ?? timer
+    this.onError = opts.onError
   }
 
   /** A failed write stops the pump for good; build a new sender on reconnect. */
@@ -196,7 +217,7 @@ export class LiveSender {
    * whether or not the state was delivered, because stopping is not a failure.
    */
   idle(): Promise<void> {
-    if (this.problem) return Promise.reject(this.problem)
+    if (this.died) return Promise.reject(this.problem)
     if (!this.running) return Promise.resolve()
     return new Promise((ok, fail) => {
       this.idlers.push([ok, fail])
@@ -211,8 +232,15 @@ export class LiveSender {
    */
   async flush(): Promise<void> {
     await this.idle()
-    if (!this.unacked || this.problem) return
-    await this.ack()
+    if (!this.unacked || this.died) return
+    // The ack runs outside the pump, so a failure here would otherwise leave a dead
+    // connection behind a sender that still reports itself healthy.
+    try {
+      await this.ack()
+    } catch (err) {
+      this.die(err)
+      throw err
+    }
   }
 
   /** Stop after the write in flight. Does not touch the connection. */
@@ -257,12 +285,9 @@ export class LiveSender {
         this.adopt(c, values)
         if (!last && this.pacing > 0) await this.nap(this.pacing)
       }
-      this.settle(null)
+      this.settle(null, false)
     } catch (err) {
-      this.problem = err
-      this.halted = true
-      this.cursor = 0
-      this.settle(err)
+      this.die(err)
     } finally {
       this.running = false
     }
@@ -322,10 +347,40 @@ export class LiveSender {
     await this.transport.write(char, this.cipher.encrypt(frame), withResponse)
   }
 
-  private settle(err: unknown): void {
+  /**
+   * Wake everyone waiting on `idle()`.
+   *
+   * `failed` is a flag rather than a truthiness test on `err`, because a transport
+   * that rejects with `undefined` or an empty string would otherwise resolve every
+   * waiter as if the batch had landed. Rare, and silent when it happens: the caller
+   * is told the panel is up to date over a connection that is gone.
+   */
+  private settle(err: unknown, failed: boolean): void {
     for (const [ok, fail] of this.idlers.splice(0)) {
-      if (err) fail(err)
+      if (failed) fail(err)
       else ok()
+    }
+  }
+
+  /**
+   * A write failed, so this sender is finished: build a new one on reconnect.
+   *
+   * `cursor` goes to 0 rather than staying where it was, because a sender that is
+   * revived by a future change of mind must not believe any column survived the
+   * failure.
+   */
+  private die(err: unknown): void {
+    if (this.died) return
+    this.died = true
+    this.problem = err
+    this.halted = true
+    this.cursor = 0
+    this.settle(err, true)
+    try {
+      this.onError?.(err)
+    } catch {
+      // The handler is UI code and the sender is already dead. Letting it throw
+      // from here would replace the write error with the handler's own.
     }
   }
 }
