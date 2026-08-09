@@ -1,0 +1,241 @@
+# Running several agents on this repo at once
+
+**The one rule: one owner per file.** Two agents editing the same file is the only failure
+mode that loses work rather than merely wasting it. Everything below exists to make that
+rule enforceable without anyone coordinating in real time.
+
+Written after two agents ran concurrently on 2026-08-09 and it worked, but only because
+their file sets happened not to overlap. Twice a file changed underneath a read and
+produced a wrong conclusion: a `grep` caught `glasses.ts` mid-rewrite and reported a
+choke-point violation that did not exist, and a test run caught a half-written test file
+and reported a failure that vanished on re-run. **Re-read before you conclude.**
+
+## How this file stays usable
+
+Three parts, changing at three different rates, and the split is what stops the file
+silting up with finished work.
+
+| Part | Changes | Is the source of truth for |
+| --- | --- | --- |
+| **The board** | when a track is added or closes | what a track is, and what finishes it |
+| `.claude/locks/` | constantly, by every agent | where every track has got to |
+| everything else | only when something goes wrong | the protocol |
+
+- **The board says what, the locks say where.** There is no status column, deliberately: a
+  row that repeats `claimed` is wrong the moment another agent writes the lock file, and
+  stale context misleads worse than absent context.
+- **A row leaves the board when its review closes**, not when the track goes `done`. The
+  reviewer checks against the done-when, so the contract has to outlive the work. Once
+  `review-N` reads `passed` or `fixed`, the row becomes one line under Landed.
+- **Numbers are permanent and never reused.** `track-N` and `review-N` are named after the
+  number, so recycling one silently attaches an old review to new work. A new track takes
+  the next unused number, whatever gaps the closed ones left.
+
+## The two scarce resources
+
+Pure TypeScript work parallelises without limit: `bun test` needs nothing physical. Two
+things do not parallelise at all, and both are physical.
+
+| Resource | Why it is a singleton | Lock |
+| --- | --- | --- |
+| **The glasses** (unit 2) | one BLE connection per device, and it is the only working pair. Its flash budget is global and counted | `.claude/locks/glasses` |
+| **The Pixel** | one screen, one Metro, one adb. Two agents installing or screenshotting see each other's app | `.claude/locks/phone` |
+
+**Lock protocol.** Before using either, check the file exists; if it does, someone else
+holds it, so do the device-free part of your work instead. To take it, write your track
+name into it. Delete it when you stop. It is advisory and that is fine: the point is that
+an agent about to flash a screenshot loop notices someone else is mid-upload.
+
+    test -f .claude/locks/glasses || echo "track-5" > .claude/locks/glasses
+
+**Only the lock holder may call `session.save()`.** Every `DATCP` is five page erases on
+the one working pair, the budget guard is per device and persists, and two agents saving
+in parallel is exactly the runaway the guard exists to stop.
+
+## The board
+
+Each track owns its files outright. If you need a change in someone else's file, write
+down what you need and say so in your final report rather than reaching across.
+
+**Ownership is per file, not per directory.** A directory in the Owns column means the
+files in it today. A **new** file you create there is yours even if the directory is
+listed against another track, because a file that did not exist cannot lose anyone's work.
+Name it in your lock line so the next agent knows it is taken.
+
+**Needs** is the eligibility test, and it covers both devices and other tracks.
+
+| # | Track | Owns | Needs | Done when |
+| --- | --- | --- | --- | --- |
+| **1** | **App shell and BLE** | `packages/app/App.tsx`, `packages/app/src/ble.ts`, `src/screens/` | phone + glasses | scan lists units, tap connects, `probe()` reports identity, text saves and scrolls |
+| **4** | **Draw canvas** | `packages/app/src/draw/`, and `core/src/sender.ts` while no other track owns it | phone | 9x24 canvas, dead pixels unavailable, brush levels, clear. Built on tracks 2 and 3. Plus the loose end `review-3` left: `LiveSender` has no error path for a dead pump, and track 4 is the first thing that needs one |
+| **5** | **Hardware verification** | `packages/cli/src/`, `research/*.md` | **glasses** | the five items in `notes/app-plan.md` "Verify before building", each written up with a confidence marker. *Corrected: that list is now seven items, and `.claude/locks/track-5` scopes this track to item 4 plus type 2 persistence. The rest is track 11* |
+| **6** | **Firmware** | `research/tools/`, `firmware/`, `notes/firmware-design.md` | none | delivery is blocked on the SWD probe; design and analysis are not |
+| **7** | **Fonts and text rendering** | `packages/core/src/font.ts`, new `packages/core/src/fonts/` | none | a proportional 5-row font with real kerning for scrolling, and a taller font for static content placed around the dead pixels. `panelBitmap()` keeps putting glyphs in the band alive across all 24 columns, `textWidth()` agrees with what actually renders, all bun-tested. Why two fonts and not one: `notes/what-to-build.md`, "A better renderer" |
+| **8** | **Effects and wide loops** | new `packages/core/src/effects.ts`, new `packages/cli/src/effects-preview.ts` | none | generators producing a `content.Bitmap` up to `content.maxColumns(1)` columns, each **seamless when scrolled**, dithered to the 4 levels, previewable in the terminal without a device. This is the "pre-rendered wide loops, then disconnect" feature: compute in floating point on the host, upload once, radio off |
+| **9** | **Rhythm channel** | new `packages/core/src/rhythm.ts`, new `packages/cli/src/rhythm.ts` | none to build, one glasses session to finish | encoder for `[len][?][style][12 bytes]`, two 4-bit heights per byte low nibble first, heights clamped 0-9, the 4 styles, plus a **pure** spectrum-to-24-heights mapper with its own tests. Spec and both bar tables: `research/firmware-internals.md`, "The rhythm channel is a full-panel atomic write". **Bytes 0 and 1 of the frame are the one unknown**, so ship the encoder marked *derived* and graduate it in a session with the glasses |
+| **10** | **Nicknames** | new `packages/app/src/nicknames.ts` | phone, **track 1 closed** (it owns the scan list) | a per-device nickname keyed on `SessionOptions.device`, in a **separate file from the ledger** because losing a wear count matters and losing a nickname does not. Scan list shows the nickname with the advert name small underneath. Rationale: `notes/what-to-build.md`, "Name your glasses, on the host" |
+| **11** | **Hardware verification, round 2** | new probe scripts in `packages/cli/src/`, `research/vendor-app-protocol.md` | **glasses**, and **track 5 closed** | verify items 1, 2, 3, 5, 6 and 7 of `notes/app-plan.md` "Verify before building", each written up with a confidence marker. Needs track 5 closed rather than just the glasses free, because both tracks write up their answers in the same research file |
+
+**Track 5's three answers are inputs to almost everything else**, which is why hardware
+verification keeps coming back to the top of the board: whether DATS bit 7 lights row 8
+decides the row mapping every renderer targets, whether `MODE 02` scrolls content narrower
+than 24 columns decides whether every upload pads to 24, and whether column 0 lands on one
+lens decides whether the draw canvas is one 24-wide surface or two mirrored 12-wide ones.
+
+## Landed
+
+One line each, kept so nobody rebuilds them. State and detail are in `.claude/locks/`.
+
+| # | Track | What it produced |
+| --- | --- | --- |
+| **2** | Renderer and content model | `core/src/content.ts` and `viewport.ts`: one `Bitmap` representation, both encoders, the 24-column window with `alive()` applied **at the window**, DATS type 2. `font.ts` untouched, which is why track 7 can own it |
+| **3** | Coalescing live sender | `core/src/sender.ts`: desired-state diffing, no queue, `CLRL` clear. Review found 3 defects and fixed them. **Never run on hardware**, and its `CLRL` clear is still *derived* |
+
+## Picking your own track
+
+So a prompt can be "do the next bit of work" without two agents choosing the same thing.
+Claims use the same directory as the device locks, because a file either exists or does
+not, where a shared status table has to be read and written and can be raced.
+
+**`.claude/locks/track-N` exists means that track is taken.** First line is the state,
+`claimed` or `done`, then a line of what is actually happening. To claim:
+
+    printf 'claimed\nscan screen and probe\n' > .claude/locks/track-1
+
+**Pick the lowest-numbered track on the board that is eligible.** Eligible means both:
+
+1. No `.claude/locks/track-N` file exists.
+2. Everything in its Needs column is satisfied: a named device has no lock file, and a
+   named track has a **closed review**, meaning `review-N` reads `passed` or `fixed`.
+
+If nothing is eligible, say so and stop rather than inventing work or reaching into
+someone else's files. A device being held is a normal answer, not a failure.
+
+**When you finish, write `done` as the first line** and leave the file. Deleting it makes
+the track look unclaimed and someone will redo it. Release the device lock separately, by
+deleting it, as soon as you stop using the hardware rather than when the track ends.
+
+## Adding a track
+
+Because the board is meant to be refilled, not just drained. Add one when work is real
+enough to have a done-when, not to park an idea: unbuilt ideas belong in
+`notes/what-to-build.md`, which is where these tracks came from in the first place.
+
+- **Take the next unused number.** Never reuse a closed one, never renumber a live one.
+- **One owner per file, so carve by file and not by feature.** If two candidate tracks
+  want the same file, they are one track, or one of them Needs the other closed.
+- **The done-when is a contract a reviewer can check item by item**, so make it a list of
+  observable things. "Better fonts" is not one; "kerned proportional font, `textWidth()`
+  agrees with what renders, tested" is.
+- **Say where the reasoning lives** rather than repeating it here. A row that has to
+  explain itself is a row that wanted a section in `notes/` instead.
+
+**Not tracks yet, and why**, so nobody re-derives the decision:
+
+| Idea | Blocked on |
+| --- | --- |
+| Text-my-glasses (strangers type a message via a QR code) | a hosting and moderation decision from Jacob, not code. Highest delight per unit of effort once decided |
+| Tapping UART1 TX at 115200 to learn the display module | a £3 USB-serial adapter nobody has bought. The only route to more brightness steps or greyscale levels |
+| Several pairs from one host | only one working pair exists, so nothing can be verified. Unblocks when unit 1 is repaired over SWD |
+
+## Shared files, and how not to collide on them
+
+`CLAUDE.md`, `notes/app-plan.md`, `package.json` and `packages/core/src/index.ts` are
+touched by everyone and owned by no one.
+
+- **Re-read immediately before editing.** It will have changed since you last looked.
+- **One small edit at the end of your track**, not a running commentary as you go.
+- **Never rewrite a section you did not write.** Correct it in place with a note saying it
+  was wrong, per `notes/WRITING.md`, or leave it and say so in your report.
+- `core/src/index.ts` is append-only in practice: add your exports, touch no others.
+
+## Standing rules, which every track inherits
+
+These are in `CLAUDE.md` too, and they are repeated here because a fresh agent reads one
+file and starts typing.
+
+- **Never write to the `fd00` OTA service.** It bricked a unit on 2026-08-08. The app
+  cannot reach it by construction, and `safe-surface.test.ts` fails the build if that
+  changes.
+- **`bun run test` must be green when you stop.** 283 tests as of 2026-08-09; the number
+  only goes up, so treat it as a floor rather than an expected value. If you find it red on
+  arrival, another agent is mid-write; re-run before believing it.
+- **No save loops.** Never call `session.save()` from an effect, a timer, or a retry
+  without a ceiling. See "Flash wear" in `notes/app-plan.md`.
+- Findings go in `research/` with a confidence marker; judgement goes in `notes/`.
+- Do not touch another track's files, unless you are reviewing that track and it is `done`
+  ("Reviewing a track"). Do not run `git commit` unless asked.
+
+## Reviewing a track
+
+A track is not finished when it is `done`, it is finished when someone other than its
+author has checked it. Reviews run in their own instance, one per track, because the agent
+that wrote the code is the worst judge of whether its tests assert the right thing.
+
+**`.claude/locks/review-N` is the review's own file**, and it exists so the reviewer never
+writes `track-N`. Two instances sharing one status file is the collision the whole
+directory exists to avoid, and it has already happened once: the track-3 review overwrote
+track 3's own description line. First line is the state, then a line of the outcome.
+
+    printf 'claimed\nreading sender.ts against its done-when\n' > .claude/locks/review-3
+
+| State | Means |
+| --- | --- |
+| `claimed` | a review is in progress |
+| `passed` | checked, nothing to change |
+| `fixed` | defects found, fixed, suite green |
+
+**Only review a track whose `track-N` reads `done`.** A `claimed` track is mid-write, and
+this file's own opening records two wrong conclusions drawn from reading a file that
+changed underneath. Worse if it holds a device lock: track 5 reviewed mid-flight would be
+read while its answers were still arriving from the glasses. There is no ordering between
+reviews otherwise: any `done` track with no `review-N` is fair game, lowest number first.
+
+**A track that carries on after being reviewed needs reviewing again.** Track 1 was checked
+while still `claimed` and landed another phase the same afternoon. Set `review-N` back to
+`claimed` when you pick it up again: the outcome line is the current state, not a history.
+
+**The reviewer owns the files of the track it is reviewing**, and this is the one exception
+to one-owner-per-file. A `done` track has no live owner, so the reviewer may fix what it
+finds rather than writing it up for nobody. What it may not touch: `track-N` itself, and
+any file belonging to a track that is still `claimed`. Anything the reviewer cannot fix for
+that reason goes in the outcome line and in its final report.
+
+**Closing a review is what retires a row.** On `passed` or `fixed`, move the track's row
+off the board into Landed as one line, keeping only what a future agent needs in order not
+to rebuild it. The lock files stay where they are.
+
+What a review is, beyond reading the diff:
+
+- **The done-when, item by item.** It is in the board and it is the contract.
+- **`bun test` green, and the count the track claimed.** Re-run it if it is red on arrival.
+- **Whether the tests assert the property the file exists for**, not just the happy path.
+  Track 3's coalescing is the example: it needed a transport that holds a write open, or
+  "an update arrived mid-write" is not a state a test can be in.
+- **Probe the edges the tests miss, in the scratchpad, before touching the code.** A probe
+  written against the unfixed code and passing afterwards proves the fix; a test written
+  after the fix only proves it matches itself. All three track-3 defects came out this way.
+- **Anything *derived* that the code then trusts as if it were verified.** This repo's
+  recurring failure. `CLRL` is the live one: it is the default clear path, and the sender
+  marks all 24 columns known-blank on the strength of a disassembled handler nobody has
+  sent to hardware, so if it is a no-op the panel stays lit and nothing repairs it. It is
+  item 6 of the verify list and belongs to track 11.
+- **Shared-file edits the track made**, which should be additive, per "Shared files" above.
+
+## Kickoff prompts
+
+One line, and it is the same line every time:
+
+    Read notes/parallel-tracks.md, claim the next eligible track, and run it to its
+    done-when.
+
+To aim an agent at something specific instead, name it:
+
+    Read notes/parallel-tracks.md, claim and run Track 5.
+
+Reviews are always aimed, never picked up by the generic prompt, because "the next bit of
+work" should build before it audits:
+
+    Read notes/parallel-tracks.md, claim and review Track 3.
+
+A cold agent needs nothing else. Everything it must not do is in "Standing rules" above.

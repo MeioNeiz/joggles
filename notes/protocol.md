@@ -231,7 +231,7 @@ casualty is the last column of the frame. Column 23 is fine; `AnimData`'s 295
 frames are all 24 columns wide.
 
 Handled in code: `Glasses.show()` sends its final write WITH response, so a frame
-cannot be half-delivered. `command_raw()` is deliberately unacked - callers
+cannot be half-delivered. `commandRaw()` is deliberately unacked - callers
 driving whole frames through it must `flush()` themselves. *verified* by the right
 column being absent before the fix and present after.
 

@@ -9,8 +9,9 @@ pixel format and panel geometry.
 
 ## Layout
 
-    packages/core    protocol, display, font    pure TS, zero dependencies
-    packages/cli     laptop control via noble   Bun + CoreBluetooth
+    packages/core    protocol, display, font,   pure TS, zero dependencies
+                     BLE sequencing, flash budget
+    packages/cli     noble adapter and scripts  Bun + CoreBluetooth
     tools/           APK pull and decompile     shell
     notes/           protocol reference         solved, verified on hardware
     research/        firmware and OTA teardown  plus a runnable image codec
@@ -18,11 +19,23 @@ pixel format and panel geometry.
 ## Quick start
 
     bun install
-    bun test                    # 17 tests, incl. FIPS-197 and captured vectors
+    bun test                    # incl. FIPS-197 vectors and stock-firmware bytes
+    bun cli probe               # what firmware is this unit running?
     bun cli text "HELLO"
     bun cli edge                # trace the panel silhouette
     bun cli bench               # measure throughput
     bun cli off
+    bun cli ledger              # flash saves counted against each unit, no connection
+
+## Our own firmware
+
+    bun run build-firmware      # firmware/joggles-v1.bin, then ota-check it
+
+Stock plus an 88-byte extension appended in free flash, reached by one 28-byte hook in
+the command dispatcher. It adds a single opcode whose first payload byte is a
+sub-command, so later features cost no further edits to the vendor's code. Built and
+gated, **not yet flashed to hardware**. Architecture and the safety envelope:
+`notes/firmware-design.md`.
 
 ### macOS Bluetooth permission
 
@@ -41,17 +54,22 @@ fails to load at runtime.
 | Property | Value |
 | --- | --- |
 | Advertised name | `GLASSES-{MAC}` |
-| SoC | ARM Cortex-M, 16 KB SRAM, 26 MHz crystal |
-| Firmware | `TR1906R04-10`, roughly 66 KB, loaded above a resident bootloader |
+| SoC | ARM Cortex-M, 16 KB SRAM, **16 MHz crystal** (was recorded as 26 MHz; the part on our board is marked `16.000MHz`) |
+| Firmware | `TR1906R04-10`, 66,084 bytes in a 76,800-byte application region |
 | OTA | service `fd00`, Panchip-style profile (no vendor name in the binaries) |
-| Panel | 9 rows x 24 columns per lens, two bits per pixel |
+| Panel | 9 rows x 24 columns in total, spanning both lenses (*derived*), two bits per pixel |
 | Encryption | AES-128-ECB, one 16-byte block per write; OTA is **not** encrypted |
 
 The OTA image format is solved and both stock images round-trip byte-identically:
 
     bun research/ota-codec.ts verify firmware/*.bin
 
-Flashing is nonetheless **not** safe yet. See `research/firmware-image-format.md`.
+**Flashing a patched stock app image is now judged reasonably safe**, because the OTA is
+staged: it writes to a separate bank at `abs 0x29400` and never erases the running
+application, so an aborted transfer costs nothing. `research/firmware-flashing.md` has
+the evidence, the size envelope and the one remaining brick vector; it supersedes the
+older "not safe yet" verdict in `research/firmware-image-format.md`. Every image must
+pass `bun run ota-check <image> firmware/TR1906R04-10_OTA.bin` first.
 
 Two physical gaps in the panel: the middle of the top row, and a triangular
 nose-bridge notch. `display.alive()` maps them.

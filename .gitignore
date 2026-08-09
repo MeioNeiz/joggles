@@ -22,3 +22,7 @@ firmware/
 
 # Bun installs these; noble is rebuilt locally via trustedDependencies (see README)
 node_modules/
+
+# Live agent coordination state for this machine; the convention is in the README
+.claude/locks/*
+!.claude/locks/README

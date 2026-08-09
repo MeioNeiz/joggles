@@ -5,8 +5,11 @@
   "workspaces": ["packages/*"],
   "trustedDependencies": ["@abandonware/noble", "@abandonware/bluetooth-hci-socket"],
   "scripts": {
-    "test": "bun test packages/core",
+    "test": "bun test packages/core packages/app/src research/tools",
     "cli": "bun run packages/cli/src/index.ts",
-    "ota-check": "bun run packages/cli/src/ota-check.ts"
+    "ota-check": "bun run packages/cli/src/ota-check.ts",
+    "flash": "bun run packages/cli/src/flash.ts",
+    "build-firmware": "bun run research/tools/build-firmware.ts",
+    "dumpcheck": "bun run research/tools/dumpcheck.ts"
   }
 }

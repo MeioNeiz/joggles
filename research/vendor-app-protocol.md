@@ -16,6 +16,9 @@ complete opcode inventory, and every hard limit.
 | `SMVEW 02` in the app | dead code, zero callers, though the device honours it | verified |
 | Saved content slots | one buffer per type, no slot index in the protocol | verified |
 | Content types | `1` = text, `2` = DIY image | verified |
+| Which type persists | **type 1 only**; type 2 stops in RAM, shown by mode 26 | verified |
+| Usable ceiling | 743 columns type 1 (1486 B), 383 columns type 2 | 740 and 383 verified |
+| Displaying type 2 | automatic on `DATCPOK`; any later `MODE` discards it, permanently | verified |
 | Upload length field | 16-bit, so up to 65535 bytes announced | verified |
 | Device-side wide scroll | real: the app uploads ~200 columns and scrolls them unattended | verified |
 | Flash ceiling for saved content | `0x600` bytes (1.5 KB) at `abs 0x3c000` | derived from firmware literals |
@@ -58,9 +61,93 @@ firmware-side rather than an app-only abstraction.
 `DATCPOK` is the device confirming it has stored and verified the buffer. There is
 no slot argument: one saved buffer per type.
 
-The uploaded content lands in a `0x600`-byte buffer at `abs 0x3c000`, with an 8-byte
-metadata record at `abs 0x3c800`, erased at 512-byte granularity. 1536 bytes is 512
-columns at 3 bytes per column, or 768 at 2 bytes per column.
+Type 1 content lands in a `0x600`-byte buffer at `abs 0x3c000`, with an 8-byte metadata
+record at `abs 0x3c800`, erased at 512-byte granularity, having been staged in an
+identically sized RAM buffer at `0x200030ac`. 1536 bytes is 768 columns at 2 bytes per
+column. *Corrected: the same 1536 bytes is **384** type 2 columns, not the 512 this
+paragraph used to claim, because the staging buffer holds an image column as a 32-bit
+word rather than the 3 bytes it arrives as. Type 2 also never leaves that RAM buffer.*
+
+### Measured upload limits and timing
+
+*verified* 2026-08-09 on `GLASSES-125B37`, stock, type 1 (text). Reproduce with
+`bun run packages/cli/src/uploadbench.ts [cols]`. Read this before sizing content or
+tuning pacing: two of the numbers above and in `notes/what-to-build.md` were wrong.
+
+**The device accepts less than the buffer holds.** 740 columns (1480 bytes, 99 blocks)
+returns `DATCPOK`; 745 columns (1490 bytes, 100 blocks) returns `ERROR`. Bisected from
+both directions. So the usable ceiling is **740 columns of text, not 768** (~3.6% below
+the buffer). *Corrected: the 768 figure above is the buffer's capacity, not what the
+firmware will take, and was quoted as a usable limit throughout the notes.*
+
+**Resolved since, from the firmware: bytes, and block count never enters into it.** The
+true type 1 bound is **1486 bytes / 743 columns**, which this bisection brackets exactly.
+`DATCP` at `abs 0x182e0` passes only when a running counter equals what `DATS` predicted;
+type 1 starts that counter at 48 and adds 2 per column, and it resets to 0 at 1536, so
+1490 bytes can never match. Mechanism and addresses: "`DATCP` is an exact-match gate" in
+`research/firmware-internals.md`. *Corrected: the paragraph here used to call the choice
+between ~1485 bytes and 100 blocks unresolved.*
+
+**Type 2 does not share this budget.** Its ceiling is **383 columns / 1149 bytes**,
+because the device buffers an image column as a 32-bit word and wraps the column counter
+at 384. Dividing 1480 by three bytes per column gives 493, which the device answers with
+`ERROR` after taking the whole upload. *verified* 2026-08-09 on `GLASSES-125B37`: 24 and
+383 columns both answer `DATCPOK`, 384 answers `ERROR`. Reproduce with
+`bun run packages/cli/src/type2.ts ceiling --yes`.
+
+**Length is validated.** The rejection is a clean `ERROR`, not silent acceptance.
+*Corrected: `notes/what-to-build.md` says "`DATS` validates nothing today" and that an
+over-long announcement "silently wraps and still replies `DATCPOK`". At least the
+oversize case is checked. The specific claim about lengths past 1536 is untested, so it
+is narrowed rather than overturned.*
+
+**Inter-block pacing floors at 6 ms**, against the vendor app's 50 ms. At 700 columns
+(1400 bytes, 94 blocks):
+
+| Inter-block sleep | Transfer | Connect to disconnect | Reply |
+| --- | --- | --- | --- |
+| 50 ms (vendor's) | 4984 ms | 5941 ms | `DATCPOK` |
+| 25 ms | 2610 ms | 3529 ms | `DATCPOK` |
+| 12 ms | 1382 ms | 2388 ms | `DATCPOK` |
+| 6 ms | 1081 ms | 1998 ms | `DATCPOK` |
+| 3 ms | 1084 ms | 1969 ms | `DATCPOK` |
+| 0 ms | 5067 ms | 6020 ms | **no reply** |
+
+**Below 6 ms the time moves rather than disappearing.** From 6 ms to 3 ms the paced
+writes halve (564 ms to 282 ms) while the wait for `DATCPOK` grows (517 ms to 802 ms):
+the device absorbs the backlog during `DATCP`. Totals are conserved, so nothing is won,
+and at 0 ms it stops replying altogether. 50 ms to 6 ms is 4.6x on the transfer and 3x
+on the full cycle.
+
+**Connection setup is ~880 ms and fixed**, consistent across every run and independent
+of pacing. Once the sleep is tuned it is 44% of the cycle, so further gains are in
+connection setup, not the stream.
+
+**`DATCPOK` does not prove the content arrived intact**, which bounds all of the above.
+The device confirms it stored *something*. Verifying a fast pass means reading the panel
+by eye, which is why `uploadbench.ts` uploads stripes every third column: dropped or
+shifted blocks show as uneven spacing, where a fill would hide them. **The 6 ms figure
+is verified as "acknowledged", not yet as "correct".**
+
+### The live channel has no measured pacing floor at all
+
+*unverified*, and easy to misread the table above as covering it. Everything measured
+here is inter-block pacing on `...960a` inside one `DATS` upload. Nobody has bisected
+`...960b`, where a drawing canvas writes one column at a time, and the two are not the
+same path: a bulk block lands in a staging buffer, while a live column write pushes a
+whole 74-byte frame at the display module.
+
+What the code uses is **18 ms, copied rather than measured**: `Glasses` picked it and
+`packages/core/src/sender.ts` inherits it. The only floor with evidence behind it is
+~6.5 ms, one 74-byte frame at 115200 baud, *derived* in `firmware-internals.md` and
+recorded there as needing one hardware test. The gap is worth closing because a
+whole-panel change is 24 writes: 430 ms at 18 ms, 168 ms at 7 ms.
+
+The experiment, one connection's work: `LiveSender` with `pacing` set to N, drawing a
+pattern where a dropped column is visible instead of hidden - alternate columns lit, the
+same trick `uploadbench.ts` uses for the bulk stream - bisecting N downward until a
+column goes stale. Read the **end state**, not the animation: 24 writes sweep visibly at
+any N, which is the hardware and not a dropped write.
 
 ## Channel routing
 
@@ -83,13 +170,18 @@ DIY mode is not required for `DATS` uploads: the text path never enters DIY. DIY
 Worth keeping straight, because they are easy to confuse:
 
 - **live column** on `...960b`: `[04][column index][3 bytes]`, two bits per pixel
-- **`DATS` type 1 (text)**: flat concatenation of **2-byte little-endian columns**,
-  one bit per pixel, with **14 usable rows in a 7 plus 7 split**: bits 0-6 are rows
-  0-6, bits 8-14 are rows 7-13, and bit 7 is unused. Recovered from a real HCI
-  capture by `packages/cli/src/dats.ts`. Our panel lights only 9 of those rows, so
-  the format is the firmware family's maximum rather than this unit's geometry
-- **`DATS` type 2 (DIY image)**: exactly 72 bytes, 24 columns of 3 bytes, two bits
-  per pixel
+- **`DATS` type 1 (text)**: flat concatenation of **2-byte little-endian columns**, one
+  bit per pixel, addressing the panel's **9 rows**: bits 0-6 are rows 1-7, bit 7 is row
+  8, bit 15 is row 0, and bits 8-14 reach nothing. *Corrected: this entry read "14
+  usable rows in a 7 plus 7 split", which put every uploaded graphic one row high and
+  dropped rows 7 and 8. See "DATS bit mapping, corrected" in
+  `research/firmware-internals.md`; `packages/core/src/dats.ts` encoded the wrong
+  reading until 2026-08-09*
+- **`DATS` type 2 (DIY image)**: 3 bytes per column, two bits per pixel. **Byte for byte
+  the live column format with its `[04][index]` header removed**, which the vendor
+  states twice: `DiyAgreement.getDiyBytes0924` and `LedView.getRealTime` pack the same
+  canvas with the same ladders. The vendor allocates a fixed `byte[72]` and so only ever
+  sends 24 columns; the firmware will take 383
 
 ## Wide buffers are real
 
@@ -110,15 +202,30 @@ The 24-column ceiling on DIY images comes from the drawing canvas being initiali
 at 24 by 9, not from the protocol. The live column frame carries a full byte of
 column index.
 
-### The one experiment worth running
+### The experiment that was worth running, and its result
 
-Upload a wide custom bitmap via **`DATS` type 2 with a length greater than 72
-bytes**, then drive it with `MODE`, watching `...9601` for `DATCPOK` versus `ERROR`.
-The mechanism (type byte, arbitrary 16-bit length, device-side `MODE` animation) is
-shared with the text path that demonstrably handles wide buffers.
+**Run on 2026-08-09.** The question was whether `DATS` type 2 accepts a length greater
+than the vendor's fixed 72 bytes. It does, up to 383 columns.
 
-This is also a genuine request/response probe, which matters because our unit never
-answers `STYPE`: the handshake gives a definite yes or no on the wire.
+| Sent | Reply |
+| --- | --- |
+| type 2, 24 columns (72 B) | `DATCPOK` |
+| type 2, 383 columns (1149 B) | `DATCPOK` |
+| type 2, 384 columns (1152 B) | `ERROR` |
+
+Two things came out of it that the question did not ask. **The image displays on
+`DATCPOK` with no `MODE` sent at all**, greyscale intact. And **`MODE` is a one-way door
+away from it**: `MODE 01 00` and `MODE 02 00` both switch the panel to the type 1 flash
+store and nothing switches back, so driving a type 2 image with `MODE` destroys it. The
+original phrasing of this experiment, "then drive it with `MODE`", would have thrown away
+the result it was trying to measure.
+
+**Nothing type 2 sends reaches flash**: the image was on the panel before a power cycle
+and the type 1 text was back after it. Mechanism and addresses: "`DATCP` is an exact-match
+gate" in `research/firmware-internals.md`.
+
+Still open: `set_mode(26)` copies only 24 columns to the live buffer, so how much of a
+383-column type 2 image is ever visible is untested.
 
 ## Corrections to the command table
 
