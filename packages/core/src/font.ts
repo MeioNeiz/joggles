@@ -8,6 +8,8 @@
  * `glyph()` flips them, since the panel's origin is bottom-left.
  */
 
+import { ROWS } from './display.js'
+
 export const BASELINE = 2
 export const HEIGHT = 5
 
@@ -88,6 +90,27 @@ export const width = (ch: string): number => rowsFor(ch)[0].length
 export function textWidth(text: string, spacing = 1): number {
   const total = [...text].reduce((n, c) => n + width(c) + spacing, 0)
   return Math.max(total - spacing, 0)
+}
+
+/**
+ * Render text into the panel's full 9 rows, glyphs sitting at the baseline.
+ *
+ * `textBitmap` returns only the 5 rows the glyphs occupy, which is what the live
+ * Grid path wants because it places them itself. Anything addressing panel rows
+ * directly - `dats.encodeBitmap`, and any preview claiming to show what the panel
+ * will show - needs them placed, or the text draws over the nose notch at rows
+ * 0-1. One helper so the renderer and the preview cannot disagree.
+ */
+export function panelBitmap(text: string, spacing = 1, baseline = BASELINE): number[][] {
+  const src = textBitmap(text, spacing)
+  const cols = src[0]?.length ?? 0
+  const out = Array.from({ length: ROWS }, () => new Array(cols).fill(0))
+  for (let r = 0; r < HEIGHT; r++) {
+    const row = baseline + r
+    if (row >= ROWS) break
+    for (let c = 0; c < cols; c++) out[row][c] = src[r][c]
+  }
+  return out
 }
 
 /** Render a whole string to a [row][col] bitmap, bottom row first. */
