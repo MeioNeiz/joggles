@@ -6,9 +6,9 @@
  * So test temporally: fill everything at one level, hold, step to the next.
  */
 import { display, protocol as p } from '@joggles/core'
-import { Glasses, sleep } from './glasses.js'
+import { open, sleep } from './glasses.js'
 
-const g = await Glasses.open({ pacing: 8 })
+const g = await open({ pacing: 8 })
 console.log(`connected to ${g.name}`)
 await g.command(p.enterDIY())
 await g.command(p.leds(true))
@@ -17,7 +17,7 @@ const fill = async (value: number) => {
   for (let c = 0; c < display.COLS; c++) {
     let bits = 0
     for (let r = 2; r <= 7; r++) bits |= value << (2 * r)
-    await g.command_raw(p.column(c, new Uint8Array([(bits >> 16) & 0xff, (bits >> 8) & 0xff, bits & 0xff])))
+    await g.commandRaw(p.column(c, new Uint8Array([(bits >> 16) & 0xff, (bits >> 8) & 0xff, bits & 0xff])))
   }
 }
 

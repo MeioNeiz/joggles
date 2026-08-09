@@ -5,9 +5,9 @@
  * and we have been running the panel dim the whole time.
  */
 import { display, protocol as p } from '@joggles/core'
-import { Glasses, sleep } from './glasses.js'
+import { open, sleep } from './glasses.js'
 
-const g = await Glasses.open({ pacing: 8 })
+const g = await open({ pacing: 8 })
 console.log(`connected to ${g.name}`)
 await g.command(p.enterDIY())
 await g.command(p.leds(true))
@@ -18,7 +18,7 @@ const fill = async (value: number) => {
     let bits = 0
     for (let r = 2; r <= 7; r++) bits |= value << (2 * r)
     const w = new Uint8Array([(bits >> 16) & 0xff, (bits >> 8) & 0xff, bits & 0xff])
-    await g.command_raw(p.column(c, w))
+    await g.commandRaw(p.column(c, w))
   }
 }
 

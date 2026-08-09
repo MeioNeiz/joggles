@@ -1,9 +1,9 @@
 import { protocol as p } from '@joggles/core'
-import { Glasses, sleep } from './glasses.js'
+import { open, sleep } from './glasses.js'
 
 // MODE's second byte is probably a content-slot index, not speed: SPEED has its
 // own opcode. Cycle static mode across slots and see which one holds our JOM.
-const g = await Glasses.open({ pacing: 8 })
+const g = await open({ pacing: 8 })
 console.log(`connected to ${g.name}\n`)
 console.log('Cycling MODE 01 <slot> - static display of each content slot.')
 console.log('Call out which SLOT NUMBER shows JOM.\n')

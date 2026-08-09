@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /** Show all four brightness levels at once, as vertical bands. */
 import { Grid, display, protocol as p } from '@joggles/core'
-import { Glasses, sleep } from './glasses.js'
+import { open, sleep } from './glasses.js'
 
 const g = new Grid()
 // Three LIT levels across the full width, separated by one dark column each,
@@ -15,7 +15,7 @@ for (let c = 0; c < display.COLS; c++) {
 console.log('levels 1,2,3 as eight-column bands, left to right:\n')
 console.log(g.render())
 
-const glasses = await Glasses.open({ pacing: 8 })
+const glasses = await open({ pacing: 8 })
 console.log(`\nconnected to ${glasses.name}`)
 await glasses.begin()
 await glasses.show(g, true)

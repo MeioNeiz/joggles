@@ -6,19 +6,19 @@
  * is transmission-bound it should shrink proportionally and vanish at the low
  * end. If it looks identical at every speed, something else causes it.
  */
-import { display, protocol as p } from '@joggles/core'
-import { Glasses, sleep } from './glasses.js'
+import { type Glasses, display, protocol as p } from '@joggles/core'
+import { open, sleep } from './glasses.js'
 
 const fillAt = async (g: Glasses, value: number) => {
   for (let c = 0; c < display.COLS; c++) {
     let bits = 0
     for (let r = 2; r <= 7; r++) bits |= value << (2 * r)
-    await g.command_raw(p.column(c, new Uint8Array([(bits >> 16) & 0xff, (bits >> 8) & 0xff, bits & 0xff])))
+    await g.commandRaw(p.column(c, new Uint8Array([(bits >> 16) & 0xff, (bits >> 8) & 0xff, bits & 0xff])))
   }
 }
 
 for (const pacing of [18, 6, 2]) {
-  const g = await Glasses.open({ pacing })
+  const g = await open({ pacing })
   await g.command(p.enterDIY())
   await g.command(p.leds(true))
   console.log(`=== pacing ${pacing}ms -> ~${24 * pacing}ms to fill. 5 on/off cycles`)

@@ -42,7 +42,7 @@ describe('frame layout', () => {
     [p.queryType(), 'STYPE'],
     [p.brightness(5), 'LIGHT\x05'],
     [p.leds(false), 'LEDOFF'],
-    [p.scrollLeft(3), 'MODE\x03\x03'],
+    [p.mode(2, 1), 'MODE\x02\x01'],
     [p.lens(2), 'LEDSECOND'],
   ]
   for (const [f, want] of cases) {

@@ -7,9 +7,9 @@
  * One full-height column at a time, so there is nothing to misread.
  */
 import { Grid, display, protocol as p } from '@joggles/core'
-import { Glasses, sleep } from './glasses.js'
+import { open, sleep } from './glasses.js'
 
-const g = await Glasses.open({ pacing: 6 })
+const g = await open({ pacing: 6 })
 console.log(`connected to ${g.name}`)
 await g.begin()
 

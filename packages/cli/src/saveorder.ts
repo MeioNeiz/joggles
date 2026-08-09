@@ -1,10 +1,10 @@
 import { Grid, display, font, protocol as p } from '@joggles/core'
-import { Glasses, sleep } from './glasses.js'
+import { open, sleep } from './glasses.js'
 
 // Earlier tests sent MODE while still in DIY, which switches to the SAVED image
 // and discards the live buffer. Correct order is: draw, save, then set mode.
 const TEXT = 'JOM'
-const g = await Glasses.open({ pacing: 8 })
+const g = await open({ pacing: 8 })
 console.log(`connected to ${g.name}`)
 
 await g.command(p.enterDIY())
@@ -28,9 +28,9 @@ console.log('    Does JOM survive the save, or does WOWo come back?')
 await g.command(p.exitDIYSave())
 await sleep(8000)
 
-console.log('\n=== PHASE 3: MODE 03 on the SAVED image, 15s')
+console.log('\n=== PHASE 3: MODE 03 (vertical bounce) on the SAVED image, 15s')
 console.log('    Is the moving text now JOM instead of WOWo?')
-await g.command(p.scrollLeft(3))
+await g.command(p.mode(3, 1))
 await sleep(15000)
 
 await g.end('keep')
