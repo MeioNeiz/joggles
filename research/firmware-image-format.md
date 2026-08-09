@@ -155,8 +155,16 @@ part. The BLE stack is RivieraWaves/CEVA derived, betrayed by the string
 contains a package named `panchip`. The die marking itself is unverified.
 
 Other hardware facts: SRAM at `0x20000000`, at most 16 KB, with initial SP
-`0x20003910` and `0x20003ffc` appearing as a literal. A 26 MHz crystal, from the
-constant `0x018cba80` (26,000,000) in the tail config block.
+`0x20003910` and `0x20003ffc` appearing as a literal.
+
+*Corrected: this used to read "a 26 MHz crystal, from the constant `0x018cba80`
+(26,000,000) in the tail config block". **The external crystal is 16 MHz.** Our own
+board was opened on 2026-08-08 and `Y1` is marked `16.000MHz`. `0x018cba80` is the
+internal oscillator and PLL reference, which Panchip's SDK sets to 26 MHz while
+defining the external `__HXT` as 16 MHz. Recorded rather than deleted because
+"constant in the image equals crystal frequency" is the reasoning that produced it, and
+it is wrong in a way worth remembering. See `hardware-access.md`, "Our own unit,
+opened".*
 
 ### Memory and flash map
 
@@ -170,7 +178,7 @@ constant `0x018cba80` (26,000,000) in the tail config block.
 | `abs 0x3dc00` | 8 KB | **bootloader.** Never written by an app OTA | derived |
 | `abs 0x3c000` - `0x3c5ff` | 1.5 KB | **uploaded user content**, a `0x600`-byte buffer; literals at `0x3c000` (x8), `0x3c200`, `0x3c600` | derived |
 | `abs 0x3c800` | 8 B | upload metadata record | derived |
-| `abs 0x3f000` | 4 KB | data sector, referenced 7 times; purpose unknown (MAC or settings?) | derived |
+| `abs 0x3f000` | 4 KB | **wrong: not referenced at all.** All 7 "references" are animation frame data. See `firmware-flashing.md` | corrected |
 | `abs 0x100000` | - | LDROM window, referenced at `0x00101000` | derived |
 | `abs >= 0x40000` | - | never referenced, consistent with a 256 KB part | derived |
 

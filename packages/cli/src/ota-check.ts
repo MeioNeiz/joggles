@@ -13,7 +13,7 @@
  * file in firmware/ when that is present.
  */
 import { existsSync } from 'node:fs'
-import { ota } from '@joggles/core'
+import { ota } from '@joggles/core/src/firmware.js'
 
 const DEFAULT_STOCK = 'firmware/TR1906R04-10_OTA.bin'
 

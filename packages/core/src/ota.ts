@@ -74,14 +74,36 @@ export const BOOTLOADER_SAFE_CODE_SIZE = FLASH_BOOTLOADER_ADDR - FLASH_DFU_ADDR
  * or the radio would be gone. Addresses come from the disassembly; see
  * research/firmware-flashing.md for the landmark table. Ranges are padded outwards
  * because the exact function ends were not all traced.
+ *
+ * Three of these came from auditing every site in the image that loads the FMC base
+ * or SYS_REGLCTL against this list; 21 of 41 fell outside it and three of those
+ * mattered:
+ *
+ * - 'flash program primitive' (abs 0x1904c) writes the staged pages and is called
+ *   only from the OTA handler. It was entirely unprotected.
+ * - 'FMC flash driver' ended at 0x1290, which covered the CONFIG0 erase but not the
+ *   program sequence that follows it. Extended to 0x1322, the end of the block.
+ * - 'OTA handoff and reset' (abs 0x1c9c8) flips the boot select to LDROM and resets.
+ *   Break it and OTAs stage, pass CRC, write the record, and never apply.
  */
 export const PROTECTED_REGIONS = [
   { name: 'image head and startup stub', start: 0x0000, end: 0x0200 },
-  { name: 'FMC flash driver', start: 0x1118, end: 0x1290 },
+  { name: 'FMC flash driver', start: 0x1118, end: 0x1322 },
+  { name: 'flash program primitive', start: 0x2840, end: 0x28a8 },
+  { name: 'OTA handoff and reset', start: 0x61c0, end: 0x6290 },
   { name: 'OTA handler', start: 0x8100, end: 0x8700 },
   { name: 'OTA payload descrambler', start: 0x9180, end: 0x9200 },
   { name: 'GATT table, including the fd00 OTA service', start: 0xc1e8, end: 0xc350 },
 ] as const
+
+/**
+ * The AES key is 16 bytes and the AES S-box begins at the very next byte
+ * (`abs 0x22ba4`, body 0xc3a4). A 17-byte key write corrupts the cipher in both
+ * directions. Not a protected region, because patching the key is intended; this is
+ * here so a key-swap tool can assert its own bounds.
+ */
+export const AES_KEY = { start: 0xc394, length: 16 } as const
+export const AES_SBOX_START = 0xc3a4
 
 // --- Container codec ------------------------------------------------------------
 
@@ -338,19 +360,49 @@ export function comparePatch(
   const a = plaintext(stock)
   const b = plaintext(patched)
 
-  if (a.length !== b.length) {
+  // Growing is how new code gets in: the free flash between the end of the image
+  // and the staging bank is where an extension lives. That is not the same as an
+  // insertion, which shifts everything after it and breaks every absolute address
+  // in the image. The two are told apart by where the extra bytes went, so the
+  // in-place bytes are still compared one for one below.
+  if (b.length > a.length) {
+    f.push({
+      severity: 'warn',
+      code: 'appended',
+      message:
+        `${b.length - a.length} byte(s) appended at body ${hex(a.length)}, past the ` +
+        `end of stock. Nothing that already existed moves, and the bytes below ` +
+        'stock length are still diffed one for one',
+    })
+  } else if (b.length < a.length) {
     f.push({
       severity: 'warn',
       code: 'length-changed',
       message:
-        `patched body is ${b.length} bytes against stock ${a.length}. Everything ` +
-        'after the first insertion shifts, so absolute addresses in the image break',
+        `patched body is ${b.length} bytes against stock ${a.length}. A shorter ` +
+        'image means content was removed rather than patched in place',
     })
   }
 
   const n = Math.min(a.length, b.length)
   const diffs: number[] = []
   for (let i = 0; i < n; i++) if (a[i] !== b[i]) diffs.push(i)
+
+  // An insertion shows up as a diff running to the end of the overlap, because
+  // everything after the insertion point has slid. A handful of in-place edits does
+  // not. This is a heuristic and it knows it: an insertion into a region that is
+  // mostly zero padding would slide quietly past. The real guarantee is upstream, in
+  // patch.ts, which can only append past the end of the image and refuses anything
+  // that would shift an existing address.
+  if (b.length !== a.length && diffs.length > n / 2) {
+    f.push({
+      severity: 'fatal',
+      code: 'looks-like-an-insertion',
+      message:
+        `${diffs.length} of ${n} overlapping bytes differ, which is what a shift ` +
+        'looks like rather than a patch. Absolute addresses in the image would break',
+    })
+  }
 
   if (diffs.length === 0 && a.length === b.length) {
     f.push({ severity: 'warn', code: 'identical', message: 'identical to stock, nothing patched' })
@@ -374,7 +426,7 @@ export function comparePatch(
     severity: 'warn',
     code: 'diff-summary',
     message:
-      `${diffs.length} byte(s) differ from stock` +
+      `${diffs.length} byte(s) patched in place` +
       (diffs.length ? `, body ${hex(diffs[0])} to ${hex(diffs[diffs.length - 1])}` : ''),
   })
   return f

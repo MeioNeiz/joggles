@@ -166,6 +166,33 @@ describe('comparePatch guards the way back', () => {
     expect(fatals(ota.check(wrap(plain), { stock }))).toContain('protected-region')
   })
 
+  test('an edit inside the flash program primitive is refused', () => {
+    const plain = makePlain()
+    plain[0x2860] = 0x42
+    expect(fatals(ota.check(wrap(plain), { stock }))).toContain('protected-region')
+  })
+
+  test('an edit inside the OTA handoff and reset is refused', () => {
+    const plain = makePlain()
+    plain[0x6200] = 0x42
+    expect(fatals(ota.check(wrap(plain), { stock }))).toContain('protected-region')
+  })
+
+  test('the flash driver region reaches the CONFIG0 program sequence', () => {
+    // body 0x12ac is the ISPCMD-program store inside the CONFIG0 writer. The region
+    // used to end at 0x1290, leaving it editable.
+    const plain = makePlain()
+    plain[0x12ac] = 0x42
+    expect(fatals(ota.check(wrap(plain), { stock }))).toContain('protected-region')
+  })
+
+  test('the AES key is patchable but the S-box starts right after it', () => {
+    expect(ota.AES_KEY.start + ota.AES_KEY.length).toBe(ota.AES_SBOX_START)
+    const plain = makePlain()
+    for (let i = 0; i < ota.AES_KEY.length; i++) plain[ota.AES_KEY.start + i] = 0x42
+    expect(ota.check(wrap(plain), { stock }).safe).toBe(true)
+  })
+
   test('the override exists but must be asked for explicitly', () => {
     const plain = makePlain()
     plain[0x8200] = 0x42
@@ -176,6 +203,81 @@ describe('comparePatch guards the way back', () => {
   test('an unpatched image is called out rather than silently passing', () => {
     const v = ota.check(stock, { stock })
     expect(v.findings.map((x) => x.code)).toContain('identical')
+  })
+})
+
+describe('growing the image is how new code gets in', () => {
+  /**
+   * A fixture with content in it, rather than makePlain's zeros.
+   *
+   * The insertion check counts how much of the overlap differs, so a mostly-empty
+   * image would slide 64 bytes and still look almost identical. Real firmware does
+   * not, and neither does this.
+   */
+  function busy(size = 0x10000): Uint8Array {
+    const p = new Uint8Array(size)
+    let x = 0x12345678
+    for (let i = 0; i < size; i++) {
+      x = (x * 1103515245 + 12345) >>> 0
+      p[i] = (x >>> 16) & 0xff
+    }
+    const dv = new DataView(p.buffer)
+    dv.setUint32(0x08, 0x20003910, true)
+    dv.setUint32(0x0c, 0x00016a01, true)
+    const v = ota.DEVICE_VERSION
+    for (let i = 0; i < v.length; i++) p[0x7808 + i] = v.charCodeAt(i)
+    p[0x7808 + v.length] = 0
+    return p
+  }
+
+  const base = busy()
+  const stock = wrap(base)
+
+  /** Stock with `extra` bytes of new code past the end, i.e. an append. */
+  const appended = (extra: number, edit?: number) => {
+    const plain = new Uint8Array(base.length + extra)
+    plain.set(base)
+    plain.fill(0xa5, base.length)
+    if (edit !== undefined) plain[edit] = plain[edit] ^ 0xff
+    return wrap(plain)
+  }
+
+  test('an append is allowed, and named as an append', () => {
+    const v = ota.check(appended(64), { stock })
+    expect(v.safe).toBe(true)
+    expect(v.findings.map((x) => x.code)).toContain('appended')
+  })
+
+  test('an append plus an in-place edit still diffs the in-place part', () => {
+    const v = ota.check(appended(64, 0xd000), { stock })
+    expect(v.safe).toBe(true)
+    const summary = v.findings.find((x) => x.code === 'diff-summary')
+    expect(summary?.message).toContain('1 byte(s) patched in place')
+  })
+
+  test('an append that lands a protected region edit is still refused', () => {
+    const v = ota.check(appended(64, 0x8200), { stock })
+    expect(fatals(v)).toContain('protected-region')
+  })
+
+  test('an insertion, which shifts everything after it, is refused', () => {
+    // The dangerous case the length check alone cannot see: same growth, but the
+    // new bytes went in at the front, so every absolute address in the image moved.
+    const plain = new Uint8Array(base.length + 64)
+    plain.set(base.subarray(0, 0x100))
+    plain.set(base.subarray(0x100), 0x100 + 64)
+    const v = ota.check(wrap(plain), { stock })
+    expect(fatals(v)).toContain('looks-like-an-insertion')
+  })
+
+  test('a shorter image is flagged rather than passed over', () => {
+    const v = ota.check(wrap(base.slice(0, base.length - 64)), { stock })
+    expect(v.findings.map((x) => x.code)).toContain('length-changed')
+  })
+
+  test('growth past the application region is fatal on size alone', () => {
+    const v = ota.check(appended(ota.SAFE_MAX_CODE_SIZE + 4 - base.length), { stock })
+    expect(fatals(v)).toContain('erases-info-page')
   })
 })
 
