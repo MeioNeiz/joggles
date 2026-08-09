@@ -1,0 +1,9 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    // The adapter is React Native code, but its pure helpers are tested under bun, so
+    // the test files need bun's globals. Expo's base sets `types`, which excludes them.
+    "types": ["bun", "react", "react-native"]
+  }
+}
