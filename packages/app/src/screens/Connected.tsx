@@ -72,7 +72,13 @@ export function Connected({
     if (probed.current === glasses) return
     probed.current = glasses
     let live = true
-    glasses.probe().then((id) => live && setIdentity(id))
+    // A dead link rejects the probe - the write itself fails - which with a bare
+    // .then() is an unhandled rejection. Identity stays 'identifying...', and the
+    // next thing the user tries will say what is actually wrong.
+    glasses
+      .probe()
+      .then((id) => live && setIdentity(id))
+      .catch(() => {})
     // Reading the ledger touches local storage only. It is the one number we have
     // about this unit's wear, so it is on the screen rather than in a debug menu.
     glasses.ledger().then((l) => live && setSaves(l.lifetime))
@@ -143,8 +149,16 @@ export function Connected({
     }
   }
 
-  /** Free, no flash, and immediate. Nothing here needs the budget guard. */
+  /**
+   * Free, no flash, and immediate. Nothing here needs the budget guard.
+   *
+   * Gated on `busy` all the same: `Glasses` does not serialise `command()` against
+   * `save()`, so a brightness tap mid-save puts a LIGHT frame inside the DATS
+   * handshake (asserted in `connected.test.ts`). What the firmware's upload state
+   * machine makes of that has never been sent to hardware, which is reason enough.
+   */
   async function light(n: number) {
+    if (busy) return
     setLevel(n)
     await glasses.command(p.brightness(n)).catch(() => {})
   }
@@ -238,7 +252,13 @@ export function Connected({
 
       <Row label="Brightness">
         {LEVELS.map((n) => (
-          <Choice key={n} on={level === n} onPress={() => light(n)} label={String(n)} />
+          <Choice
+            key={n}
+            on={level === n}
+            onPress={() => light(n)}
+            label={String(n)}
+            disabled={busy}
+          />
         ))}
       </Row>
 
@@ -293,14 +313,24 @@ function Choice({
   on,
   onPress,
   label,
+  disabled = false,
 }: {
   on: boolean
   onPress: () => void
   label: string
+  disabled?: boolean
 }) {
   return (
-    <Pressable style={[styles.choice, on && styles.choiceOn]} onPress={onPress}>
-      <Text style={[styles.choiceText, on && styles.choiceTextOn]}>{label}</Text>
+    <Pressable
+      style={[styles.choice, on && styles.choiceOn]}
+      onPress={onPress}
+      disabled={disabled}
+    >
+      <Text
+        style={[styles.choiceText, on && styles.choiceTextOn, disabled && styles.disabled]}
+      >
+        {label}
+      </Text>
     </Pressable>
   )
 }

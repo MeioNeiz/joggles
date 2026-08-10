@@ -105,13 +105,26 @@ export const STYLES: readonly StyleSpec[] = [
   { bars: 8, barWidth: 2, gap: 1, table: TAPERED_BARS, bytesUsed: 4 },
 ]
 
-export const spec = (style: Style): StyleSpec => STYLES[style]
+/**
+ * Throws on anything outside 0-3 rather than returning `undefined`: the firmware
+ * draws nothing for an unknown style, and untyped callers (the CLI's argv) would
+ * otherwise crash on a property of undefined three calls later.
+ */
+export function spec(style: Style): StyleSpec {
+  const s = STYLES[style]
+  if (!s) throw new RangeError(`style must be 0-3, got ${style}`)
+  return s
+}
 
 /** Heights this style expects. 24, 24, 12 and 8. */
-export const barCount = (style: Style): number => STYLES[style].bars
+export const barCount = (style: Style): number => spec(style).bars
 
-const clampHeight = (v: number): number =>
-  Math.max(0, Math.min(MAX_HEIGHT, Math.round(Number.isFinite(v) ? v : 0)))
+// NaN is no data and goes dark. Infinities saturate: a runaway loud bar must top
+// out at 9, because sending it to 0 is the firmware's blank-a-column rule again.
+const clampHeight = (v: number): number => {
+  const r = Math.round(v)
+  return Number.isNaN(r) ? 0 : Math.max(0, Math.min(MAX_HEIGHT, r))
+}
 
 /**
  * Resample a run of heights to `n` of them, by averaging each source window.

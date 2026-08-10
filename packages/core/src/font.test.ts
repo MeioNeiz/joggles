@@ -34,8 +34,7 @@ function inkAt(piece: kern.Piece, x: number, top: number): number[] {
 test('every glyph is rectangular and the height the font claims', () => {
   for (const f of FONTS) {
     for (const [ch, rows] of Object.entries(f.glyphs)) {
-      expect(`${f.name} ${ch} rows`).toBe(`${f.name} ${ch} rows`)
-      expect(rows.length).toBe(f.height)
+      expect(`${f.name} ${ch}: ${rows.length} rows`).toBe(`${f.name} ${ch}: ${f.height} rows`)
       expect(new Set(rows.map((r) => r.length)).size).toBe(1)
       expect(rows.every((r) => /^[.#]+$/.test(r))).toBe(true)
     }
@@ -188,6 +187,27 @@ test('the tall font never lights a dead LED', () => {
         if (placed.bitmap[r][c]) expect(alive(r, c)).toBe(true)
       }
     }
+  }
+})
+
+// The other half of "reported, never drawn": a glyph is placed whole or not at
+// all. "No dead LED lit" and "dropped is a suffix" both still pass if draw()
+// quietly clips a row, so count the ink: every pixel the kept prefix carries is
+// on the panel, no more and no fewer.
+test('staticText draws every pixel of what it kept, whole glyphs only', () => {
+  const ink = (text: string) =>
+    kern
+      .pieces(text, TALL7)
+      .reduce((n, p) => n + p.rows.join('').split('#').length - 1, 0)
+  for (const s of ['JOGGLES', 'WWWWWWWW', 'Jog 42!', 'T.T.T.', '3:45 OK', 'IIIIIIIIII']) {
+    const placed = staticText(s)
+    expect(s.endsWith(placed.dropped)).toBe(true)
+    const kept = s.slice(0, s.length - placed.dropped.length)
+    const lit = placed.bitmap.reduce(
+      (n, row) => n + row.reduce((m, v) => m + (v ? 1 : 0), 0),
+      0,
+    )
+    expect(`"${s}" lit ${lit}`).toBe(`"${s}" lit ${ink(kept)}`)
   }
 })
 

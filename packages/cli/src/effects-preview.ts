@@ -28,6 +28,8 @@ const ABOUT: Record<string, string> = {
   wave: 'one bright ribbon on black, the clearest shape on 9 rows',
   ripple: 'concentric rings from a few centres, reading as pulses going past',
   starfield: 'fixed stars at mixed brightnesses. It cannot twinkle, only drift',
+  fire: 'a flame silhouette off the bottom rows, leaning so travel reads as rising',
+  mirror: 'kaleidoscope of any other effect, mirror axes crossing the nose bridge',
 }
 
 interface Args {
@@ -51,6 +53,8 @@ function parse(argv: string[]): Args {
     else if (key === 'hard') out.opts.soft = false
     else if (key === 'soft') out.opts.soft = true
     else if (key === 'dither') out.opts.dither = choice(argv[++i], key, ['ordered', 'none'])
+    else if (key === 'inner')
+      out.opts.inner = choice(argv[++i], key, fx.EFFECT_NAMES.filter((n) => n !== 'mirror'))
     else if (key === 'passes') out.passes = num(argv[++i], key)
     else if (key === 'speed') out.speed = num(argv[++i], key)
     // Anything else is passed through as a number, so each effect's own
@@ -96,7 +100,9 @@ Each effect also takes its own numbers, passed straight through:
   stripes --cycles 12 --shear 0.5 --duty 0.5 --hard
   wave --cycles 4 --harmonic 8 --amplitude 0.34 --thickness 0.22
   ripple --sources 3 --wavelength 6 --falloff 18
-  starfield --density 0.12 --seed 1`)
+  starfield --density 0.12 --seed 1
+  fire --tongue 12 --height 0.62 --flicker 0.33 --lean 3
+  mirror --inner plasma --folds 5   (the inner effect's own numbers pass through)`)
 }
 
 /**

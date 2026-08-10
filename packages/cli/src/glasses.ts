@@ -11,6 +11,7 @@
  * laptop is where the loops actually get written.
  */
 import { Glasses, budget, protocol as p, sleep } from '@joggles/core'
+import { recordConnection } from './connections.js'
 import { NobleScanner } from './noble.js'
 import { fileStore } from './ledger.js'
 
@@ -33,7 +34,15 @@ export async function open(opts: Options = {}): Promise<Glasses> {
   const scanner = new NobleScanner()
   const unit = await scanner.first(prefixes, timeoutMs)
   const transport = await scanner.connect(unit.id)
-  return Glasses.attach(transport, unit.name, { pacing, cipher, budget: flashBudget })
+  const glasses = await Glasses.attach(transport, unit.name, {
+    pacing,
+    cipher,
+    budget: flashBudget,
+  })
+  // Recorded here rather than in each command so every connection counts, which is
+  // what lets the broadcast leave alone any unit we have ever driven.
+  await recordConnection(unit.name)
+  return glasses
 }
 
 export { Glasses, sleep }

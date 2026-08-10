@@ -27,6 +27,8 @@ test('the registry is not empty and every entry has both halves', () => {
   // Guards every table-driven test below: an empty registry would make them vacuous.
   expect(fx.EFFECT_NAMES.length).toBeGreaterThanOrEqual(5)
   expect(fx.EFFECT_NAMES).toContain('plasma')
+  expect(fx.EFFECT_NAMES).toContain('fire')
+  expect(fx.EFFECT_NAMES).toContain('mirror')
   expect(Object.keys(fx.FIELDS)).toEqual(fx.EFFECT_NAMES)
   for (const name of fx.EFFECT_NAMES) {
     expect(typeof fx.EFFECTS[name]).toBe('function')
@@ -109,6 +111,10 @@ test('a fractional cycle count is unreachable through any generator', () => {
   same(fx.stripes({ cycles: 11.6, columns: 64 }), fx.stripes({ cycles: 12, columns: 64 }))
   same(fx.wave({ harmonic: 7.5, columns: 64 }), fx.wave({ harmonic: 8, columns: 64 }))
   same(fx.ripple({ sources: 2.6, columns: 64 }), fx.ripple({ sources: 3, columns: 64 }))
+  same(fx.mirror({ folds: 4.7, columns: 64 }), fx.mirror({ folds: 5, columns: 64 }))
+  // fire's cycle count is derived, columns over tongue, and rounds the same way:
+  // 64 over 12 and over 12.8 are both 5 whole cycles.
+  same(fx.fire({ tongue: 12, columns: 64 }), fx.fire({ tongue: 12.8, columns: 64 }))
 
   // Zero and negative cycle counts would divide the loop into nothing.
   expect(fx.seam(fx.plasma({ cycles: 0, columns: 64 })).seamless).toBe(true)
@@ -306,4 +312,93 @@ test('effects leave the dead pixels to the window, and the window wraps the loop
     expect(last[r][1]).toBe(loop[r][0])
   }
   expect(viewport.frames(loop, { kind: 'scroll', dir: 0 }).length).toBe(64)
+})
+
+test('mirror closes a field that cannot close on its own', () => {
+  // The wrapper's defining property: reflection replaces wrapping, so travelling
+  // out and back arrives where it started whatever the inner does. This is the
+  // same col-indexed sine fieldGap exists to catch, made seamless by folding.
+  const open: fx.Field = ({ col }) => 0.5 + 0.5 * Math.sin((2 * Math.PI * col) / 100)
+  expect(fx.fieldGap(open, { columns: 240 })).toBeGreaterThan(0.1)
+  expect(fx.fieldGap(fx.mirrorField({ inner: open }), { columns: 240 })).toBeLessThan(1e-9)
+})
+
+test('mirror output is pixel-symmetric about every axis, which is the kaleidoscope', () => {
+  // 64 columns and folds that divide it, so every position the axes imply is an
+  // exact binary fraction and symmetry can be equality rather than tolerance.
+  // dither: none, because the Bayer thresholds are position-tied and shade the
+  // two sides of an axis differently on purpose.
+  for (const folds of [1, 2]) {
+    const bmp = fx.mirror({ columns: 64, folds, dither: 'none' })
+    for (let k = 0; k <= 2 * folds; k++) {
+      const axis = (k * 64) / (2 * folds)
+      for (let d = 1; d < 8; d++) {
+        const a = (((axis + d) % 64) + 64) % 64
+        const b = (((axis - d) % 64) + 64) % 64
+        for (let r = 0; r < ROWS; r++) expect(bmp[r][a]).toBe(bmp[r][b])
+      }
+    }
+  }
+})
+
+test('the default mirror keeps an axis on screen, and folds is the variety trade', () => {
+  // Axes sit every half-segment, so the default segment of two panel widths puts
+  // one axis on the 24-column window at all times. The price, pinned here so it
+  // is a stated property rather than a surprise: everything depends on u only
+  // through the folded position, so the loop repeats every segment.
+  expect(fx.mirror({ columns: 240 })).toEqual(fx.mirror({ columns: 240, folds: 5 }))
+  const f = fx.mirrorField({ folds: 5 })
+  const at = (col: number, row: number): number =>
+    f({ u: col / 240, v: row / (ROWS - 1), col, row, columns: 240 })
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col + 48 < 240; col += 7) {
+      expect(Math.abs(at(col, row) - at(col + 48, row))).toBeLessThan(1e-12)
+    }
+  }
+})
+
+test('mirror reaches a named inner, and refuses the two names that cannot work', () => {
+  // The options bag flows through to the inner, so the inner's own parameters
+  // keep working under the wrapper. Unnamed, the inner is a one-cycle plasma.
+  expect(fx.mirror({ columns: 64 })).toEqual(
+    fx.mirror({ columns: 64, inner: 'plasma', cycles: 1 }),
+  )
+  expect(fx.mirror({ columns: 64, inner: 'stripes' })).not.toEqual(
+    fx.mirror({ columns: 64 }),
+  )
+  expect(fx.mirror({ columns: 64, inner: 'stripes', cycles: 3 })).not.toEqual(
+    fx.mirror({ columns: 64, inner: 'stripes', cycles: 9 }),
+  )
+  // Mirroring mirror would resolve itself forever, and a typo should say what
+  // the registry holds rather than quietly falling back to plasma.
+  expect(() => fx.mirrorField({ inner: 'mirror' })).toThrow(/itself/)
+  expect(() => fx.mirrorField({ inner: 'lava' })).toThrow(/no field called lava/)
+})
+
+test('fire rises from the bottom: full base, dark top, thinning in between', () => {
+  const bmp = fx.fire({ columns: 240 })
+  expect(new Set(bmp[0])).toEqual(new Set([MAX_LEVEL]))
+  expect(new Set(bmp[ROWS - 1])).toEqual(new Set([0]))
+  // Shape asserted on the raw field, because dither noise can tie adjacent rows
+  // in the bitmap: brightness never grows with height, and clearly falls.
+  const f = fx.fireField()
+  const mean = (row: number): number => {
+    let sum = 0
+    for (let col = 0; col < 240; col++) {
+      sum += f({ u: col / 240, v: row / (ROWS - 1), col, row, columns: 240 })
+    }
+    return sum / 240
+  }
+  expect(mean(0)).toBe(1)
+  for (let row = 1; row < ROWS; row++) expect(mean(row)).toBeLessThanOrEqual(mean(row - 1))
+  expect(mean(4)).toBeLessThan(mean(0))
+})
+
+test('fire closes whatever it is leaning by, and the lean is really in the picture', () => {
+  // lean shifts each row's profile by a constant, which cannot open a loop that
+  // whole cycle counts close; it is diagonal structure, so it must change pixels.
+  for (const opts of [{}, { lean: 7.3, tongue: 9.5 }, { lean: -4, height: 0.9 }]) {
+    expect(fx.fieldGap(fx.fireField(opts), { columns: 240 })).toBeLessThan(1e-9)
+  }
+  expect(fx.fire({ columns: 64, lean: 0 })).not.toEqual(fx.fire({ columns: 64, lean: 4 }))
 })

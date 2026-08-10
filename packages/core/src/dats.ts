@@ -52,6 +52,26 @@ export const DATS_ROWS = 9
 export const TYPE_TEXT = 1
 export const TYPE_IMAGE = 2
 
+/**
+ * Blank columns the firmware itself keeps round type 1 content in its persistent
+ * loop, per side. `DATS` zeroes the store and starts type 1 at byte 48, and `DATCP`
+ * records `ncols = N + 48` (`abs 0x1833e`), 24 columns before the content and 24
+ * after.
+ *
+ * **The scroll walks them only after a power cycle.** In the session that saved,
+ * `MODE 02` loops the bare content width: a solid 32-column block looped seamlessly
+ * on hardware 2026-08-10, no dark pass (*verified*). After a power cycle the device
+ * restores from the flash record and the 48 blank columns join the loop (*derived*
+ * from the record layout; the power-cycle observation is running as track 16).
+ *
+ * Two consequences, both track 16's finding. A client-side trailing gap on a
+ * scrolling type 1 save buys nothing: the persistent loop already carries 48 blank
+ * columns, and more just lengthens the dark pass between repeats. And previews must
+ * simulate the post-cycle loop (`viewport.marqueeAt`), because unattended-and-
+ * power-cycled is the state the glasses actually live in.
+ */
+export const TYPE1_BRACKET = 24
+
 /** Bit carrying panel row `r`. Row 0 is the bottom, as everywhere else here. */
 function bitForRow(r: number): number {
   if (r === 0) return 15

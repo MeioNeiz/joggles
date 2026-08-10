@@ -137,6 +137,27 @@ test('clear is one write, and the canvas and the device agree afterwards', async
   expect(canvas.empty).toBe(true)
 })
 
+test('loading a saved drawing writes its lit columns and nothing else', async () => {
+  const t = new MockTransport()
+  const canvas = new Canvas()
+  const sender = new LiveSender(t, { pacing: 0 })
+
+  // What the Load button runs: replace the canvas, hand the sender the new state.
+  // The drawing lights columns 3 and 20; the erased column 5 was never lit on the
+  // device, so nothing is owed there and nothing is written.
+  const levels = canvas.levels()
+  levels[4][3] = display.PIXEL_ON
+  levels[6][20] = display.PIXEL_DIM
+  expect(canvas.load(levels)).toBe(true)
+  sender.set(canvas.snapshot())
+  await sender.idle()
+
+  expect(indices(t)).toEqual([3, 20])
+  expect(wordFor(t, 3)).toBe(display.PIXEL_ON << (display.STRIDE * 4))
+  expect(wordFor(t, 20)).toBe(display.PIXEL_DIM << (display.STRIDE * 6))
+  expect(t.writes.at(-1)?.withResponse).toBe(true)
+})
+
 test('a dead link tells the screen once, and the sender stays dead', async () => {
   const t = new MockTransport()
   const seen: unknown[] = []

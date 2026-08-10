@@ -169,6 +169,30 @@ export class Canvas {
     return this
   }
 
+  /**
+   * Replace the whole canvas with a stored drawing.
+   *
+   * Through `paint`, deliberately: the library clamps levels but keeps whatever
+   * positions its file held, so a hand-edited `library.json` could light a hole.
+   * The refusal that keeps a stroke honest keeps a loaded drawing honest too.
+   *
+   * Ends any stroke in progress, or the next drag would draw a line from wherever
+   * the finger last was into the middle of the loaded drawing.
+   */
+  load(levels: content.Bitmap): boolean {
+    this.lift()
+    const before = this.grid
+    this.grid = new Grid()
+    for (let row = 0; row < display.ROWS; row++) {
+      const cells = levels[row] ?? []
+      for (let col = 0; col < display.COLS; col++) {
+        const level = cells[col] ?? 0
+        if (level > 0) this.paint({ row, col }, level)
+      }
+    }
+    return COLUMNS.some((c) => before.columnWord(c) !== this.grid.columnWord(c))
+  }
+
   clear(): boolean {
     this.lift()
     if (this.empty) return false

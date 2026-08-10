@@ -53,7 +53,7 @@
  */
 import { type Bitmap, blank, maxColumns, width } from './content.js'
 import * as dats from './dats.js'
-import { MAX_LEVEL, ROWS } from './display.js'
+import { COLS, MAX_LEVEL, ROWS } from './display.js'
 
 /** Ordered-dither tile, and therefore the granularity every loop width snaps to. */
 export const TILE = 8
@@ -456,6 +456,113 @@ function hash(x: number, y: number, seed: number): number {
   return (h >>> 0) / 4294967296
 }
 
+export interface FireOptions extends RenderOptions {
+  /** Columns per flame tongue. The cycle count it implies is rounded whole. */
+  tongue?: number
+  /** Mean tip height, 0 the bottom row to 1 the top. */
+  height?: number
+  /** How far tips wander either side of `height`, same units. */
+  flicker?: number
+  /** Columns a tongue's tip trails its base. The diagonal is what reads as rising. */
+  lean?: number
+}
+
+/**
+ * A flame silhouette rising from the bottom rows.
+ *
+ * Not a simulation, because nothing here can be (see the module note): the fire
+ * is a still profile, a craggy tip line summed from three whole-cycle sines at
+ * unrelated multiples, hottest at the base and dying towards the tips. `lean` is
+ * doing the real work: a slanted edge travelling horizontally is the only
+ * vertical motion this panel can fake, so shearing the tongues sideways makes
+ * them appear to lick upward as the loop goes past.
+ *
+ * At `levels: 4` the dithered gradient breaks into embers at the tips; at
+ * `levels: 2` it is the silhouette the name says, so it survives the wide saved
+ * route unflattened.
+ */
+export function fireField(opts: FireOptions = {}): Field {
+  const tongue = Math.max(2, opts.tongue ?? 12)
+  const height = opts.height ?? 0.62
+  const flicker = opts.flicker ?? 0.33
+  const lean = opts.lean ?? 3
+  return ({ u, v, columns }) => {
+    const cycles = Math.max(1, Math.round(columns / tongue))
+    const p = u - (lean * v) / columns
+    const ridge =
+      0.5 * turn(cycles * p + 0.17) +
+      0.3 * turn((2 * cycles + 1) * p + 0.61) +
+      0.2 * turn((3 * cycles + 2) * p + 0.29)
+    // Floored so a silly height/flicker pairing cannot put the tip at or below
+    // the base, where the division under it would blow up.
+    const tip = Math.max(0.12, height + flicker * ridge)
+    if (v >= tip) return 0
+    // 1.45 saturates the bottom third of each tongue, so the base reads as the
+    // hot part rather than the whole flame fading evenly.
+    return Math.min(1, 1.45 * (1 - v / tip))
+  }
+}
+
+export const fire = (opts: FireOptions = {}): Bitmap => render(fireField(opts), opts)
+
+export interface MirrorOptions extends PlasmaOptions {
+  /** What to reflect: a registry name, or any `Field` of your own. */
+  inner?: string | Field
+  /** Reflected segments round the loop. Rounded whole; axes every half-segment. */
+  folds?: number
+}
+
+/**
+ * Kaleidoscope: any field, reflected so mirror axes cross the nose bridge.
+ *
+ * Symmetry does more work at 216 pixels than detail ever could
+ * (`notes/what-to-build.md`, "Trippy visuals"). The loop is cut into `folds`
+ * segments and the inner field's whole traverse plays forwards then backwards
+ * inside each, so every half-segment boundary is a mirror axis. The default
+ * spaces the axes one panel width apart, which keeps an axis on screen at all
+ * times, and the lenses mirror each other whenever one crosses the bridge.
+ *
+ * Reflection replaces wrapping, and that has two consequences worth naming.
+ * **The mirrored loop closes whether or not the inner field does**: travelling
+ * out and back arrives where it started, so this is the one generator that can
+ * take a field built against raw `col` and make it seamless, and the join is an
+ * axis like any other rather than a seam. And everything depends on `u` only
+ * through the folded position, so the loop repeats every segment: `folds` trades
+ * variety for symmetry, with `folds: 1` a palindrome of the whole inner field
+ * that never repeats.
+ *
+ * A named inner is built from this same options bag, so its own parameters pass
+ * straight through. Either kind of inner is sampled at fractional `col`. With no
+ * inner named, the default is a **one-cycle** plasma: the traverse is compressed
+ * into half a segment, and three cycles folded that tightly tile at 8 columns,
+ * where the symmetry drowns in its own repetition.
+ */
+export function mirrorField(opts: MirrorOptions = {}): Field {
+  const field =
+    typeof opts.inner === 'string'
+      ? namedField(opts.inner, opts)
+      : opts.inner ?? plasmaField({ ...opts, cycles: opts.cycles ?? 1 })
+  return (s) => {
+    const folds = Math.max(1, Math.round(opts.folds ?? s.columns / (2 * COLS)))
+    // Wrapped, because fieldGap probes one column past either end of the loop.
+    const wrapped = s.u - Math.floor(s.u)
+    const p = wrapped * folds - Math.floor(wrapped * folds)
+    const t = p < 0.5 ? 2 * p : 2 * (1 - p)
+    return field({ ...s, u: t, col: t * s.columns })
+  }
+}
+
+/** Resolve a registry name to its field, refusing the one that would recurse. */
+function namedField(name: string, opts: RenderOptions): Field {
+  if (name === 'mirror') throw new Error('mirror cannot mirror itself')
+  const make = FIELDS[name]
+  if (make) return make(opts)
+  const names = EFFECT_NAMES.filter((n) => n !== 'mirror').join(', ')
+  throw new Error(`no field called ${name}. One of: ${names}`)
+}
+
+export const mirror = (opts: MirrorOptions = {}): Bitmap => render(mirrorField(opts), opts)
+
 /**
  * Every generator by name, so a preview or a screen can offer the list without
  * knowing what is in it.
@@ -470,10 +577,12 @@ export const EFFECTS: Record<string, (opts?: RenderOptions) => Bitmap> = {
   wave,
   ripple,
   starfield,
+  fire,
+  mirror,
 }
 
 /**
- * The same five as fields, before anything quantises them.
+ * The same generators as fields, before anything quantises them.
  *
  * Here so `fieldGap` can be run over every shipped generator rather than only
  * over fields written inside a test. That distinction is the whole point: the
@@ -485,6 +594,8 @@ export const FIELDS: Record<string, (opts?: RenderOptions) => Field> = {
   wave: waveField,
   ripple: rippleField,
   starfield: starfieldField,
+  fire: fireField,
+  mirror: mirrorField,
 }
 
 export const EFFECT_NAMES: string[] = Object.keys(EFFECTS)

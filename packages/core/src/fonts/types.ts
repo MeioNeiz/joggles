@@ -27,7 +27,8 @@ export interface Font {
   readonly fallback: string[]
   /**
    * Tuck in columns for one named pair, overriding what the profiles measure.
-   * Key is the two characters. Still clamped by `tuckLimit`, so an entry here
+   * Key is the two characters as typed, before any case folding, so a tall7
+   * entry needs both spellings. Still clamped by `tuckLimit`, so an entry here
    * cannot make two glyphs touch.
    */
   readonly pairs: Record<string, number>

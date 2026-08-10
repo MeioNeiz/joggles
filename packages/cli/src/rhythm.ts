@@ -36,10 +36,16 @@ import { protocol as p, rhythm } from '@joggles/core'
 import { open, sleep } from './glasses.js'
 
 const args = Bun.argv.slice(2)
-const cmd = args.find((a) => !a.startsWith('--')) ?? 'preview'
+const positional = args.filter((a) => !a.startsWith('--'))
+const cmd = positional[0] ?? 'preview'
 const confirmed = args.includes('--yes')
 const inDiy = args.includes('--in-diy')
-const style = (Number(args.filter((a) => !a.startsWith('--'))[1] ?? 0) || 0) as rhythm.Style
+const styleArg = positional[1] ?? '0'
+if (!['0', '1', '2', '3'].includes(styleArg)) {
+  console.error(`style must be 0-3, got ${styleArg}`)
+  process.exit(2)
+}
+const style = Number(styleArg) as rhythm.Style
 const seconds = Number(args.find((a) => a.startsWith('--seconds='))?.slice(10) ?? 20)
 const fps = Number(args.find((a) => a.startsWith('--fps='))?.slice(6) ?? 25)
 
@@ -132,6 +138,8 @@ async function cmdSend(): Promise<void> {
     await glasses.command(p.enterDIY())
     await glasses.command(p.exitDIY())
     console.log('left DIY with an empty live buffer; the unit should be in mode 1')
+    console.log('a dark panel can also be the power gate: this channel is ignored')
+    console.log('unless the unit was switched on at its button (flag 0x2000306d)')
   }
 
   const frames = Math.max(1, Math.round(seconds * fps))

@@ -13,12 +13,26 @@
  * device in range, and at a festival that is hundreds - so leaving this screen open
  * used to drain the battery indefinitely for nothing. It now runs for `SCAN_MS` and
  * then waits to be asked again.
+ *
+ * Rows show the nickname with the advert name small underneath, because the advert
+ * name is what every other tool and every log line will show. The rename editor lives
+ * here too, keyed on the advert name - the same key `SessionOptions.device` defaults
+ * to and the ledger uses - so the name follows the unit, not the platform handle.
  */
 import { Glasses, type Discovered } from '@joggles/core'
 import { useEffect, useState } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native'
 import { scanner } from '../ble.js'
 import { flashBudget } from '../ledger.js'
+import { MAX_NICKNAME } from '../nicknames.js'
+import { nicknames } from '../nicknames-store.js'
 
 /** Long enough to find a pair that is switched on, short enough not to cost anything. */
 const SCAN_MS = 20_000
@@ -30,6 +44,11 @@ export function Scan({ onOpen }: { onOpen: (glasses: Glasses) => void }) {
   const [scanning, setScanning] = useState(true)
   /** Bumped by "Scan again", which is the only thing that restarts the effect. */
   const [round, setRound] = useState(0)
+  /** React's copy of the nickname map; `nicknames` itself is the source of truth. */
+  const [names, setNames] = useState<Record<string, string>>(() => nicknames.all())
+  /** The `Discovered.id` being renamed, or null. One editor open at a time. */
+  const [editing, setEditing] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
 
   useEffect(() => {
     let live = true
@@ -40,7 +59,13 @@ export function Scan({ onOpen }: { onOpen: (glasses: Glasses) => void }) {
         // Replace on re-sighting so RSSI stays current rather than appending duplicates.
         setUnits((prev) => [...prev.filter((u) => u.id !== unit.id), unit])
       })
-      .catch((e) => live && setError(String(e.message ?? e)))
+      .catch((e) => {
+        if (!live) return
+        setError(String(e.message ?? e))
+        // A scan that never started (permission refused, adapter off) must not spin
+        // out the round: end it, so the retry button arrives with the error.
+        setScanning(false)
+      })
 
     const done = setTimeout(() => {
       if (!live) return
@@ -68,7 +93,24 @@ export function Scan({ onOpen }: { onOpen: (glasses: Glasses) => void }) {
     } catch (e) {
       setError(String((e as Error).message ?? e))
       setBusy(null)
+      // connect() stopped the device scan on its way in, so from here the spinner
+      // would be a lie: nothing is scanning. The round's timer firing later just
+      // sets this false again, which is harmless.
+      setScanning(false)
     }
+  }
+
+  function beginRename(unit: Discovered) {
+    setDraft(names[unit.name] ?? '')
+    setEditing(unit.id)
+  }
+
+  function commitRename(unit: Discovered) {
+    // Keyed on the advert name, not unit.id: the platform handle does not identify
+    // a unit across phones, and this key is the one the ledger already uses.
+    nicknames.set(unit.name, draft)
+    setNames(nicknames.all())
+    setEditing(null)
   }
 
   return (
@@ -85,19 +127,54 @@ export function Scan({ onOpen }: { onOpen: (glasses: Glasses) => void }) {
         </View>
       ) : null}
 
-      {units.map((unit) => (
-        <Pressable
-          key={unit.id}
-          style={styles.unit}
-          onPress={() => connect(unit)}
-          disabled={busy !== null}
-        >
-          <Text style={styles.name}>{unit.name}</Text>
-          <Text style={styles.rssi}>
-            {busy === unit.id ? 'connecting...' : `${unit.rssi} dBm`}
-          </Text>
-        </Pressable>
-      ))}
+      {units.map((unit) => {
+        if (editing === unit.id) {
+          return (
+            <View key={unit.id} style={styles.unit}>
+              <TextInput
+                style={styles.input}
+                value={draft}
+                onChangeText={setDraft}
+                placeholder="Nickname. Empty clears it"
+                placeholderTextColor="#555"
+                autoFocus
+                maxLength={MAX_NICKNAME}
+                returnKeyType="done"
+                onSubmitEditing={() => commitRename(unit)}
+              />
+              <Pressable onPress={() => commitRename(unit)} hitSlop={8}>
+                <Text style={styles.rename}>save</Text>
+              </Pressable>
+            </View>
+          )
+        }
+        const nick = names[unit.name]
+        return (
+          <Pressable
+            key={unit.id}
+            style={styles.unit}
+            onPress={() => connect(unit)}
+            disabled={busy !== null}
+          >
+            <View>
+              <Text style={styles.name}>{nick ?? unit.name}</Text>
+              {nick ? <Text style={styles.advert}>{unit.name}</Text> : null}
+            </View>
+            <View style={styles.side}>
+              <Text style={styles.rssi}>
+                {busy === unit.id ? 'connecting...' : `${unit.rssi} dBm`}
+              </Text>
+              <Pressable
+                onPress={() => beginRename(unit)}
+                disabled={busy !== null}
+                hitSlop={8}
+              >
+                <Text style={styles.rename}>{nick ? 'rename' : 'name'}</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        )
+      })}
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -126,7 +203,19 @@ const styles = StyleSheet.create({
     borderBottomColor: '#222',
   },
   name: { color: '#eee', fontSize: 17 },
+  advert: { color: '#666', fontSize: 12, marginTop: 2 },
+  side: { alignItems: 'flex-end', gap: 4 },
   rssi: { color: '#888', fontSize: 13 },
+  rename: { color: '#4ade80', fontSize: 12 },
+  input: {
+    flex: 1,
+    color: '#eee',
+    fontSize: 16,
+    paddingVertical: 4,
+    marginRight: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#4ade80',
+  },
   error: { color: '#f87171', fontSize: 13, marginTop: 12 },
   again: {
     marginTop: 16,

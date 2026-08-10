@@ -4,26 +4,16 @@
  *
  *   bun cli probe            report what firmware a unit carries
  *   bun cli text "HELLO"     scroll or centre text
+ *   bun cli broadcast "HI"   set your text on every new pair in range
  *   bun cli edge             trace the panel silhouette
  *   bun cli bench            measure the real frame rate
  *   bun cli off              blank the panel
  *   bun cli ledger           flash saves counted against each unit
  */
 import { Grid, budget, display, font, jgx, protocol as p } from '@joggles/core'
+import { type BroadcastOptions, broadcast, frameFor } from './broadcast.js'
 import { open, sleep } from './glasses.js'
 import { LEDGER_FILE, allDevices } from './ledger.js'
-
-function frameFor(bitmap: number[][], offset: number): Grid {
-  const g = new Grid()
-  const w = bitmap[0]?.length ?? 0
-  for (let r = 0; r < font.HEIGHT; r++) {
-    for (let c = 0; c < display.COLS; c++) {
-      const src = c + offset
-      if (src >= 0 && src < w && bitmap[r][src]) g.set(font.BASELINE + r, c)
-    }
-  }
-  return g
-}
 
 async function cmdText(text: string): Promise<void> {
   const bitmap = font.textBitmap(text)
@@ -48,6 +38,36 @@ async function cmdText(text: string): Promise<void> {
     }
   }
   await glasses.end('keep')
+}
+
+/**
+ * Set your text on every pair of glasses we have not connected to before, as they
+ * come into range. Runs until Ctrl-C. See `broadcast.ts`; the cipher is picked per
+ * advert so a crew unit in the crowd gets the crew key and everyone else the vendor
+ * one. `--all` disables the "leave connected units alone" safety.
+ *
+ *   bun cli broadcast "HELLO"            new units only, until Ctrl-C
+ *   bun cli broadcast "HELLO" --for 60   stop after a minute
+ *   bun cli broadcast "HELLO" --all      light every unit in range, connected or not
+ *   bun cli broadcast "HI" --dwell 2000  hold each unit 2s so you can watch it
+ */
+async function cmdBroadcast(rest: string[]): Promise<void> {
+  const opts: BroadcastOptions = {}
+  const words: string[] = []
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]
+    if (a === '--all') opts.all = true
+    else if (a === '--for') opts.forSeconds = Number(rest[++i])
+    else if (a === '--dwell') opts.dwellMs = Number(rest[++i])
+    else if (a === '--pacing') opts.pacing = Number(rest[++i])
+    else words.push(a)
+  }
+
+  const key = await crewKey()
+  opts.cipher = (name) =>
+    key && name.startsWith(p.CREW_NAME_PREFIX) ? p.cipher(key) : p.vendor
+
+  await broadcast(words.join(' ') || 'HELLO', opts)
 }
 
 async function cmdEdge(): Promise<void> {
@@ -222,6 +242,9 @@ try {
     case 'text':
       await cmdText(rest.join(' ') || 'HELLO')
       break
+    case 'broadcast':
+      await cmdBroadcast(rest)
+      break
     case 'edge':
       await cmdEdge()
       break
@@ -238,7 +261,9 @@ try {
       await cmdLedger()
       break
     default:
-      console.log('usage: bun cli <probe|text|edge|off|bench|stress|ledger> [args]')
+      console.log(
+        'usage: bun cli <probe|text|broadcast|edge|off|bench|stress|ledger> [args]',
+      )
       process.exit(1)
   }
   process.exit(0)

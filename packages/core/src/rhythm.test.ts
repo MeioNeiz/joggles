@@ -57,6 +57,30 @@ test('heights are clamped to 0-9 here rather than left to blank a column', () =>
   expect(f[2] >> 4).toBe(0)
 })
 
+/**
+ * Found by review-9's probes: `Number.isFinite` sent +Infinity to 0, which is the
+ * firmware's blank-a-column rule reproduced on the host. Loud must saturate.
+ */
+test('an infinite height saturates at 9 instead of blanking, NaN goes dark', () => {
+  const f = encode([Infinity, -Infinity, NaN, ...zeros(21)], 0)
+  expect(f[2] & 0xf).toBe(MAX_HEIGHT)
+  expect(f[2] >> 4).toBe(0)
+  expect(f[3] & 0xf).toBe(0)
+})
+
+/**
+ * Also review-9: `spec()` returned undefined for a style outside 0-3 and callers
+ * crashed on a property of undefined three calls later. The CLI reaches here with
+ * a bare argv cast, so the throw has to name the problem.
+ */
+test('a style outside 0-3 throws a RangeError, not a deep TypeError', () => {
+  for (const bad of [4, -1, 1.5, NaN] as unknown[] as Style[]) {
+    expect(() => spec(bad)).toThrow(RangeError)
+    expect(() => encode(zeros(24), bad)).toThrow(/style must be 0-3/)
+    expect(() => render(zeros(24), bad)).toThrow(/style must be 0-3/)
+  }
+})
+
 test('a style is given exactly the heights it draws, or it throws', () => {
   expect(barCount(0)).toBe(24)
   expect(barCount(1)).toBe(24)

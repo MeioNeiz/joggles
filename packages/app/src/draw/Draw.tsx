@@ -26,10 +26,18 @@
  *     `onError` a dropped link is silent and the phone goes on showing a drawing the
  *     glasses stopped receiving. The sender stays dead by design, so the honest
  *     message is "reconnect", not a retry.
+ *
+ * "Save drawing" keeps the canvas in the phone's library (`library.ts`), because the
+ * phone is the only place a drawing can persist: the device's greyscale save dies at
+ * power-off and its flash save flattens grey. A library save is a local file write,
+ * so it needs no link and no budget; Load puts an item back through the same live
+ * columns a stroke uses, still no flash and still no `MODE`.
  */
 import { Glasses, LiveSender } from '@joggles/core'
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import type { SavedDrawing, SavedItem } from '../library.js'
+import { library } from '../library-store.js'
 import { Pad } from './Pad.js'
 import { Canvas, type Cell } from './canvas.js'
 
@@ -43,10 +51,14 @@ const BRUSHES = [
 
 const reason = (e: unknown): string => String((e as Error)?.message ?? e)
 
+const onlyDrawings = (items: SavedItem[]): SavedDrawing[] =>
+  items.filter((item): item is SavedDrawing => item.kind === 'drawing')
+
 export function Draw({ glasses, onBack }: { glasses: Glasses; onBack: () => void }) {
   const [sender, setSender] = useState<LiveSender | null>(null)
   const [trouble, setTrouble] = useState<string | null>(null)
   const [brush, setBrush] = useState(3)
+  const [saved, setSaved] = useState<SavedDrawing[] | null>(null)
 
   // The canvas mutates in place - a stroke is a touch per frame and copying a grid
   // per touch is work for nothing - so a counter is what tells React it changed.

@@ -149,10 +149,14 @@ style uses.
 
 | Style | Bars | Columns each | Gap | Table | Payload bytes read | Loop bound |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0 | 24 | 1 | 0 | solid | 12 | `cmp r3, #0xc` at `0x21b68` |
+| 0 | 24 | 1 | 0 | solid | 12 | `cmp r3, #0xc` at `0x21b6a` |
 | 1 | 24 | 1 | 0 | tapered | 12 | `cmp r3, #0xc` |
 | 2 | 12 | 2 | 0 | tapered | 6 | `cmp r3, #6` at `0x21c30` |
 | 3 | 8 | 2 | 1 | tapered | 4 | `cmp r3, #4` at `0x21cb8` |
+
+*Corrected: the style 0 bound first read `0x21b68`, off by 2; the `cmp` is at
+`0x21b6a` (bytes `0c 2b` re-peeked during review-9, `e4 b2` uxtb sits at `0x21b68`),
+which is where `firmware-internals.md` already had it.*
 
 Two heights per byte, **low nibble first**, so bar `2n` comes from `byte & 0xf` and
 bar `2n+1` from `byte >> 4`.

@@ -159,3 +159,30 @@ test('levels are what the sender would send: the same grid, row 0 at the bottom'
   expect(c.levels()[8][0]).toBe(display.MAX_LEVEL)
   expect(grid.columnWord(0)).toBe(grid.get(8, 0) << (display.STRIDE * 8))
 })
+
+/** A stored drawing, as the library holds one: 9 rows of 24 levels. */
+const stored = (cells: Array<[number, number, number]>): number[][] => {
+  const b = Array.from({ length: display.ROWS }, () => Array<number>(display.COLS).fill(0))
+  for (const [row, col, level] of cells) b[row][col] = level
+  return b
+}
+
+test('load replaces the canvas, refuses holes, and says whether anything changed', () => {
+  const c = new Canvas()
+  c.paint({ row: 3, col: 1 }, 2)
+  // Cell (0, 12) is the nose notch: a hand-edited library file could hold it lit,
+  // and the canvas must refuse it the same way it refuses a stroke there.
+  expect(c.load(stored([[4, 6, 3], [0, 12, 3]]))).toBe(true)
+  expect(drawn(c)).toEqual(['4,6'])
+  expect(display.alive(0, 12)).toBe(false)
+  // Loading what is already shown is not a change, so the screen sends nothing.
+  expect(c.load(stored([[4, 6, 3]]))).toBe(false)
+})
+
+test('load ends the stroke, so the next drag does not draw a line into the drawing', () => {
+  const c = new Canvas()
+  c.drag({ row: 5, col: 2 }, 3)
+  c.load(stored([[5, 20, 3]]))
+  c.drag({ row: 5, col: 22 }, 3)
+  expect(drawn(c)).toEqual(['5,20', '5,22'])
+})
