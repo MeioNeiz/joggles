@@ -7,6 +7,8 @@
   "scripts": {
     "test": "bun test packages/core packages/app/src research/tools",
     "cli": "bun run packages/cli/src/index.ts",
+    "effects": "bun run packages/cli/src/effects-preview.ts",
+    "rhythm": "bun run packages/cli/src/rhythm.ts",
     "ota-check": "bun run packages/cli/src/ota-check.ts",
     "flash": "bun run packages/cli/src/flash.ts",
     "build-firmware": "bun run research/tools/build-firmware.ts",

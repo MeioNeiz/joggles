@@ -165,9 +165,11 @@ make that choice explicit rather than accidental.
 | Enter with | `SMVEW 01` | nothing, DATS does not need DIY |
 
 **The Saved column is DATS type 1 throughout.** Type 2, the greyscale encoding, is a
-third route wearing the second one's clothes: same channel and handshake, but 383
-columns, no flash and **no persistence past a power cycle**. Its Persists and Flash rows
-read the same as Live's. *derived*, `research/firmware-internals.md`.
+third route wearing the second one's clothes: same channel and handshake, but **24
+usable columns**, no flash and **no persistence past a power cycle**. Its Persists and
+Flash rows read the same as Live's. *verified* 2026-08-09, `research/vendor-app-protocol.md`.
+*Corrected: this said 383 columns, which is what the device accepts rather than what it
+displays, and was marked derived before verify item 4 ran.*
 
 **Size the progress bar from transfer, not from the cycle.** At 700 columns the measured
 numbers are 4984 ms of transfer at the vendor's 50 ms pacing and 1081 ms at 6 ms; the
@@ -422,8 +424,11 @@ delivery routes" says 740 columns, which is 1480 bytes at type 1's two bytes per
 and type 1 is the only type the bisection ever ran. This file then said type 2's ceiling
 was that budget at three bytes, **493 columns**. It is not. The device buffers an image
 column as a 32-bit word and wraps at 384, so type 2 stops at **383 columns** and answers
-`ERROR` above it. `content.maxColumns(type)` is the figure to quote; `MAX_SAVED_BYTES` is
-what was measured, and it is a type 1 measurement.
+`ERROR` above it. *Corrected a third time:* 383 is what `DATCP` accepts, and only the
+first **24** columns are ever displayed, so 24 is the number content is sized against.
+`content.maxColumns(type)` is the figure to quote and gives 740 / 24;
+`content.IMAGE_ACCEPT_CEILING` is the 383. `MAX_SAVED_BYTES` is what was measured, and it
+is a type 1 measurement.
 
 **Type 2 does not persist**, which the flash-wear budget below never accounted for. Only
 type 1 reaches the flash writer; type 2 stops in RAM and is shown by mode 26, exactly as
@@ -510,6 +515,54 @@ that happen.
   separable, wider bands with dark separators were). Present grey as shading, not as four
   distinct colours, and do not build a feature that needs the user to read a level at a
   glance.
+
+#### Built and drawn on, 2026-08-09
+
+`packages/app/src/draw/`: `canvas.ts` is the arithmetic, `Pad.tsx` the touch surface,
+`Draw.tsx` the screen. All four points above are in it, and the band is derived from
+`display.alive()` rather than written down so it cannot drift from the mask.
+
+**A finger has been on it, and the wire log says so.** *Corrected: this section said the
+screen had never been rendered, which was true for about half an hour.*
+`packages/app/.expo/dev/logs/start.log` decodes with the vendor key as one clean
+session: `SMVEW 01` and `LEDON` **once** - so `begin()` did not double-fire the way
+`probe()` once did - then **210 live column writes over 48.7 seconds**, then `CLRL`
+alone, then the probe that belongs to the Compose screen. No `MODE` while in DIY, so
+nothing discarded the drawing under the person drawing it.
+
+Two things in that are evidence about this code rather than about the link:
+
+- **21 of the 24 columns and all 9 rows were written.** A hit test that had gone wrong
+  the way `pointerEvents` goes wrong resolves every touch to cell 0, so the spread is
+  what says the touch coordinates are the pad's and not a child pixel's.
+- **4.3 writes per second**, two orders off the pacing floor, so the coalescing was
+  never under load. A fast scribble is still untested against real timing.
+
+**What it does not prove is the panel.** Nobody has said what appeared, so whether row 8
+of the pad is the top row of the glasses, whether the three greys separate, and whether
+`CLRL` blanked anything are all still unwitnessed. The wire is checked below it: 25
+tests over the hit test, the stroke interpolation and the columns that reach the wire,
+plus `tsc` and an `expo export` that proves Metro resolves the `.tsx` files.
+
+Three decisions worth not re-making:
+
+- **Touch samples are joined with Bresenham.** A drag reports one cell per frame and
+  painting only what was reported draws a dotted line. Lifting the finger ends the
+  stroke, or the next touch draws a line across the panel to where it started.
+- **The holes are refused at paint time, not at hit-test time.** A stroke across the
+  nose bridge has to come out the other side, so being over a dead pixel is a fact about
+  the pixel and not about the touch.
+- **The pixel grid takes no touches** (`pointerEvents="none"`). `locationX` is relative
+  to whichever view was touched, so 216 touchable children would resolve every touch to
+  cell 0 - which looks like a broken hit test rather than a layout mistake.
+
+`Glasses.live()` is new in `core/src/session.ts` and is how a screen gets a sender: the
+transport and the cipher are private to the session, and a screen that re-derives the
+cipher on a crew unit writes frames the device silently ignores.
+
+**Not built, and not in this track's contract: saving a drawing.** Type 2 is 24 columns
+and does not persist, so "save this drawing" is a decision about what the button
+promises rather than an encoder change.
 
 ## Scope, by increment
 
@@ -764,14 +817,18 @@ live sender was built and turned out to rest on two figures nobody has measured.
    one 24-wide surface across both eyes or two mirrored 12-wide ones. It is the difference
    between one canvas and two, so it is a UI decision, not a detail.
 3. **`MODE 02 <dir>`** horizontal scroll on our own uploaded content, both directions.
-4. ~~**DATS type 2 at exactly 72 bytes**, then over 72.~~ **Done, 2026-08-09.** Both
-   answer `DATCPOK`; the ceiling is 383 columns and 384 answers `ERROR`. So a saved
-   drawing can be wider than the panel. Two things the item did not ask, and both change
-   the screen: the image **displays on `DATCPOK` with no `MODE`**, and any `MODE` after it
-   switches to the type 1 flash store **with no way back**, so a drawing screen must not
-   send one. And type 2 **writes no flash**, so it does not survive a power cycle; a
-   drawing the user expects to keep has to go as type 1 and be shown as `flattened`.
-   `bun run packages/cli/src/type2.ts` reproduces all of it.
+4. ~~**DATS type 2 at exactly 72 bytes**, then over 72.~~ **Done, 2026-08-09, and the
+   answer is no.** Over 72 is *accepted* to 383 columns, `ERROR` from 384 (device
+   replies, solid), but **only the first 24 columns are ever displayed** (read off the
+   panel by eye, and a null observation: caveat and the harder test in
+   `research/firmware-internals.md`), so a greyscale drawing cannot be wider than the
+   panel. Wide drawings have to go as type 1 and lose their grey. Three more things the
+   item did not ask, all of which shape the screen: the image **displays on `DATCPOK`
+   with no `MODE`**; any `MODE` after it switches to the type 1 flash store **with no way
+   back**, so a drawing screen must not send one; and type 2 **writes no flash**, so it
+   does not survive a power cycle. What type 2 is actually good for is a whole 24-column
+   greyscale frame with **no left-to-right sweep**, which no other path offers for
+   arbitrary pixels. `bun run packages/cli/src/type2.ts` reproduces all of it.
 5. **`MODE 02` on content narrower than the panel.** Upload 10 columns and scroll them.
    Nothing says the firmware handles content shorter than one screen, and "HI" is the
    first thing anyone will type on Tuesday. If it misbehaves, the fix is to pad every
@@ -782,6 +839,11 @@ live sender was built and turned out to rest on two figures nobody has measured.
    `LiveSender`, send `clear()`, watch. It is the same code `SMVEW 01` runs, so the
    expected answer is yes; if it is no, `clear({ atomic: false })` is already the
    fallback and the option stops being a hedge and becomes the default.
+   **The send half happened on 2026-08-09** and the item still stands: the draw screen's
+   clear button put `CLRL` on the wire by itself, 56 seconds into a session with 210
+   columns drawn and the panel therefore lit (`packages/app/.expo/dev/logs/start.log`).
+   Nobody said what the panel did, which is the entire question, so this stays open and
+   the next person to try it needs only to look.
 7. **How low live pacing goes.** 18 ms per column is copied from `Glasses`, never
    measured, and it is 430 ms for a whole-panel change against ~168 ms at the ~6.5 ms
    floor the firmware implies. Bisect `LiveSender`'s `pacing` with alternate columns lit

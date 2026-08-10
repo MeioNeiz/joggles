@@ -105,6 +105,7 @@ export const exitDIYSave = () => frame('SMVEW', 2)
 export const brightness = (level: number) => frame('LIGHT', level)
 /** 0-100, bucketed to 3.8-12.5 columns/second by the ladder at `abs 0x183da`. */
 export const speed = (v: number) => frame('SPEED', v)
+/** Bank index, and the bank starts at 20: the fourth animation is 23, not 3. */
 export const animation = (i: number) => frame('ANIM', i)
 /** The firmware matches `LOOP`, not `LOOA`, and our own build removes it entirely:
  *  the dispatcher hook replaces that arm. `animation(19)` reaches the same mode. */

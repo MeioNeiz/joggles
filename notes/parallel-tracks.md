@@ -68,19 +68,17 @@ Name it in your lock line so the next agent knows it is taken.
 | --- | --- | --- | --- | --- |
 | **1** | **App shell and BLE** | `packages/app/App.tsx`, `packages/app/src/ble.ts`, `src/screens/` | phone + glasses | scan lists units, tap connects, `probe()` reports identity, text saves and scrolls |
 | **4** | **Draw canvas** | `packages/app/src/draw/`, and `core/src/sender.ts` while no other track owns it | phone | 9x24 canvas, dead pixels unavailable, brush levels, clear. Built on tracks 2 and 3. Plus the loose end `review-3` left: `LiveSender` has no error path for a dead pump, and track 4 is the first thing that needs one |
-| **5** | **Hardware verification** | `packages/cli/src/`, `research/*.md` | **glasses** | the five items in `notes/app-plan.md` "Verify before building", each written up with a confidence marker. *Corrected: that list is now seven items, and `.claude/locks/track-5` scopes this track to item 4 plus type 2 persistence. The rest is track 11* |
-| **6** | **Firmware** | `research/tools/`, `firmware/`, `notes/firmware-design.md` | none | delivery is blocked on the SWD probe; design and analysis are not |
 | **7** | **Fonts and text rendering** | `packages/core/src/font.ts`, new `packages/core/src/fonts/` | none | a proportional 5-row font with real kerning for scrolling, and a taller font for static content placed around the dead pixels. `panelBitmap()` keeps putting glyphs in the band alive across all 24 columns, `textWidth()` agrees with what actually renders, all bun-tested. Why two fonts and not one: `notes/what-to-build.md`, "A better renderer" |
-| **8** | **Effects and wide loops** | new `packages/core/src/effects.ts`, new `packages/cli/src/effects-preview.ts` | none | generators producing a `content.Bitmap` up to `content.maxColumns(1)` columns, each **seamless when scrolled**, dithered to the 4 levels, previewable in the terminal without a device. This is the "pre-rendered wide loops, then disconnect" feature: compute in floating point on the host, upload once, radio off |
 | **9** | **Rhythm channel** | new `packages/core/src/rhythm.ts`, new `packages/cli/src/rhythm.ts` | none to build, one glasses session to finish | encoder for `[len][?][style][12 bytes]`, two 4-bit heights per byte low nibble first, heights clamped 0-9, the 4 styles, plus a **pure** spectrum-to-24-heights mapper with its own tests. Spec and both bar tables: `research/firmware-internals.md`, "The rhythm channel is a full-panel atomic write". **Bytes 0 and 1 of the frame are the one unknown**, so ship the encoder marked *derived* and graduate it in a session with the glasses |
 | **10** | **Nicknames** | new `packages/app/src/nicknames.ts` | phone, **track 1 closed** (it owns the scan list) | a per-device nickname keyed on `SessionOptions.device`, in a **separate file from the ledger** because losing a wear count matters and losing a nickname does not. Scan list shows the nickname with the advert name small underneath. Rationale: `notes/what-to-build.md`, "Name your glasses, on the host" |
 | **11** | **Hardware verification, round 2** | new probe scripts in `packages/cli/src/`, `research/vendor-app-protocol.md` | **glasses**, and **track 5 closed** | verify items 1, 2, 3, 5, 6 and 7 of `notes/app-plan.md` "Verify before building", each written up with a confidence marker. Needs track 5 closed rather than just the glasses free, because both tracks write up their answers in the same research file |
 
-**Track 5's three answers are inputs to almost everything else**, which is why hardware
+**Track 11's three answers are inputs to almost everything else**, which is why hardware
 verification keeps coming back to the top of the board: whether DATS bit 7 lights row 8
 decides the row mapping every renderer targets, whether `MODE 02` scrolls content narrower
 than 24 columns decides whether every upload pads to 24, and whether column 0 lands on one
 lens decides whether the draw canvas is one 24-wide surface or two mirrored 12-wide ones.
+*Corrected: this said track 5, which took only verify item 4 before closing.*
 
 ## Landed
 
@@ -90,6 +88,9 @@ One line each, kept so nobody rebuilds them. State and detail are in `.claude/lo
 | --- | --- | --- |
 | **2** | Renderer and content model | `core/src/content.ts` and `viewport.ts`: one `Bitmap` representation, both encoders, the 24-column window with `alive()` applied **at the window**, DATS type 2. `font.ts` untouched, which is why track 7 can own it |
 | **3** | Coalescing live sender | `core/src/sender.ts`: desired-state diffing, no queue, `CLRL` clear. Review found 3 defects and fixed them. **Never run on hardware**, and its `CLRL` clear is still *derived* |
+| **5** | Hardware verification | Verify item 4 settled on hardware: type 2 is **accepted to 383 columns, displays only the first 24, and writes no flash**; it shows itself on `DATCPOK` and any later `MODE` discards it for good. `content.MAX_IMAGE_COLUMNS` is 24 and `IMAGE_ACCEPT_CEILING` the 383. Repro `packages/cli/src/type2.ts`. **Items 1, 2, 3, 5, 6 and 7 were not touched and are track 11** |
+| **6** | Firmware | `research/tools/`: `build-firmware.ts`, `ext.ts`, `thumb.ts`, `patch.ts`, plus `swd-recon.sh` (read-only OpenOCD, no write command in it) and `dumpcheck.ts` (validates a dump by diffing `abs 0x16800` against `ota.plaintext()`). Image built, **never flashed**; the hook and extension are hand-decoded only. Delivery still blocked on the SWD probe |
+| **8** | Effects and wide loops | `core/src/effects.ts`: 5 generators (plasma, stripes, wave, ripple, starfield) as a field plus a render of it, ordered 8x8 dither, `levels: 2` or `4`. Ceiling **736**, not 740: widths snap down to the dither tile. `bun run effects <name>` previews any of them scrolling in the terminal with nothing attached. Review found 6 defects and fixed them; the one that matters is that **`seam()` cannot prove a loop closes**, so `fieldGap()` does it on the field before quantising |
 
 ## Picking your own track
 
@@ -98,9 +99,14 @@ Claims use the same directory as the device locks, because a file either exists 
 not, where a shared status table has to be read and written and can be raced.
 
 **`.claude/locks/track-N` exists means that track is taken.** First line is the state,
-`claimed` or `done`, then a line of what is actually happening. To claim:
+`claimed` or `done`, then a line of what is actually happening. **Claim with `set -C`**,
+which makes the write fail instead of overwriting when someone got there first:
 
-    printf 'claimed\nscan screen and probe\n' > .claude/locks/track-1
+    (set -C; printf 'claimed\nscan screen and probe\n' > .claude/locks/track-1) || echo taken
+
+A plain `>` truncates whatever was there, and `test -f` then `>` is two steps with a gap
+between them. *verified* in zsh: the second writer gets `file exists` and the first
+writer's line survives.
 
 **Pick the lowest-numbered track on the board that is eligible.** Eligible means both:
 
@@ -114,6 +120,25 @@ someone else's files. A device being held is a normal answer, not a failure.
 **When you finish, write `done` as the first line** and leave the file. Deleting it makes
 the track look unclaimed and someone will redo it. Release the device lock separately, by
 deleting it, as soon as you stop using the hardware rather than when the track ends.
+
+### Two agents claimed track 4 twenty seconds apart, 2026-08-09
+
+Which is the collision this whole directory exists to avoid, arriving through the
+claim protocol rather than around it. Both read the board, both ran `test -f`, both
+saw nothing, and the second `>` silently replaced the first's line - so the shared
+state named one owner while two agents built. Both then started on
+`core/src/sender.ts`, which for a few minutes carried **two `onError` declarations**
+and did not compile. `set -C` above is the fix; the rest is what to do when it
+happens anyway.
+
+- **The loser writes nothing to `track-N`.** This scheme has no slot for a yielded
+  claim, and inventing one puts a second writer on the file all over again.
+- **Split by what each has already built, not by who claimed first.** Track 4 ended
+  as `core/src/sender.ts` to one agent and `packages/app/src/draw/` to the other,
+  which is the file boundary the board already draws.
+- **Say it out loud, agent to agent.** The locks are a claim protocol, not a channel:
+  one line each and nobody re-reads them. This was settled by messaging the other
+  sessions directly, and finding which one held the track took four tries.
 
 ## Adding a track
 

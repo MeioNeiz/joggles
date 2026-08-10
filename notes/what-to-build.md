@@ -81,6 +81,15 @@ a 6-row band is safe everywhere while using all 9 rows means content gets chewed
 the nose bridge. That argues for two fonts, a safe 6-row one for scrolling and a taller
 one for static content positioned around the gaps.
 
+*Built 2026-08-09 as `band5` and `tall7`, and the scrolling one came out 5 rows rather
+than the 6 this paragraph asked for. The band is 6 rows and a 6-row font would fill it
+exactly, which leaves nothing for the dot on an `i` or a comma; 5 rows of cap height with
+one row of air buys mixed case, and legibility at 24 columns comes from lowercase far
+more than from a sixth row. The taller one is 7 rows, not 9: rows 0 and 8 are both
+notched, so a 9-row glyph has almost no position that clears them, whereas 7 rows only
+has to dodge one 4-column hole and still fits 4 to 5 characters. Descenders were dropped
+for the same reason the scrolling font stays in the band.*
+
 ## Controlling other people's glasses
 
 New goal, and the useful realisation is that it is the *inverse* of the AES key-swap
