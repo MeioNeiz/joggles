@@ -50,6 +50,7 @@ import {
 import { settings } from '../settings-store.js'
 import { THEMES, useTheme } from '../theme.js'
 import { Card, Chip, ChipRow, Fine, FreeButton, INK, Link, StatusLine, type Status } from '../ui.js'
+import { Spray } from './Spray.js'
 
 const SCAN_MS = 20_000
 const TICK_MS = 1_000
@@ -82,12 +83,32 @@ export function GlassesScreen({
   busy: boolean
   liveWork: boolean
   onOpen: (glasses: Glasses) => void
-  onClose: () => void
+  /** Awaitable: the spray needs the pair actually let go before it takes the radio. */
+  onClose: () => Promise<void>
   onClear: () => Promise<void>
   onPrefs: () => void
 }) {
+  /**
+   * The spray lives here because it is the tab about other people's pairs, and because
+   * it needs the two things this screen already has: the connection, to let go of, and
+   * the scanner. It is checked before `glasses`, so releasing the pair mid-spray does not
+   * mount the scan list underneath it and start a second scan against the spray's own.
+   */
+  const [mode, setMode] = useState<'pairs' | 'spray'>('pairs')
+
+  if (mode === 'spray') {
+    return (
+      <Spray
+        items={items}
+        holding={glasses === null ? null : (nicknames.get(glasses.name) ?? glasses.name)}
+        onRelease={onClose}
+        onBack={() => setMode('pairs')}
+      />
+    )
+  }
+
   return glasses === null ? (
-    <Scan onOpen={onOpen} />
+    <Scan onOpen={onOpen} onSpray={() => setMode('spray')} />
   ) : (
     <Connected
       glasses={glasses}
@@ -98,12 +119,19 @@ export function GlassesScreen({
       onClose={onClose}
       onClear={onClear}
       onPrefs={onPrefs}
+      onSpray={() => setMode('spray')}
     />
   )
 }
 
 /** The scan half. Track 1's list, with the remembered pair connecting by itself. */
-function Scan({ onOpen }: { onOpen: (glasses: Glasses) => void }) {
+function Scan({
+  onOpen,
+  onSpray,
+}: {
+  onOpen: (glasses: Glasses) => void
+  onSpray: () => void
+}) {
   const theme = useTheme()
   const [units, setUnits] = useState<Discovered[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -283,6 +311,13 @@ function Scan({ onOpen }: { onOpen: (glasses: Glasses) => void }) {
         />
       ) : null}
 
+      {/* The other half of "pairs nearby": the ones that are not yours. Free, and it
+          writes nothing to anybody's memory, which is why it is a link and not a sheet. */}
+      <View style={styles.spray}>
+        <Link label="Spray a picture at pairs nearby" onPress={onSpray} />
+        <Fine>One still picture, no flash, and one push per pair.</Fine>
+      </View>
+
       <SimulatedPair onChanged={() => setRound((n) => n + 1)} />
     </ScrollView>
   )
@@ -331,15 +366,18 @@ function Connected({
   onClose,
   onClear,
   onPrefs,
+  onSpray,
 }: {
   glasses: Glasses
   items: SavedItem[] | null
   resident: string | null
   busy: boolean
   liveWork: boolean
-  onClose: () => void
+  /** Awaitable: the spray needs the pair actually let go before it takes the radio. */
+  onClose: () => Promise<void>
   onClear: () => Promise<void>
   onPrefs: () => void
+  onSpray: () => void
 }) {
   const theme = useTheme()
   const [identity, setIdentity] = useState<Identity | null>(null)
@@ -474,6 +512,17 @@ function Connected({
       </Card>
 
       <Card>
+        <Text style={styles.name}>Pairs that are not yours</Text>
+        <Text style={styles.detail}>
+          Spray one still picture at the pairs around you. It writes nothing to their
+          memory, and this pair is let go while it runs.
+        </Text>
+        <View style={styles.actions}>
+          <Link label="Spray at pairs nearby" onPress={onSpray} disabled={busy} />
+        </View>
+      </Card>
+
+      <Card>
         <Text style={styles.detail}>{ledger === null ? '...' : wearWords(ledger)}</Text>
         {rows.length > 0 ? (
           <Link
@@ -540,4 +589,5 @@ const styles = StyleSheet.create({
   },
   swatch: { width: 26, height: 26, borderRadius: 13 },
   actions: { flexDirection: 'row', gap: 18 },
+  spray: { gap: 6, marginTop: 18 },
 })

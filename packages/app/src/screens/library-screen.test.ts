@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { expect, test } from 'bun:test'
+import { NOT_SEARCHED } from '../builtins.js'
 
 const HERE = dirname(new URL(import.meta.url).pathname)
 
@@ -52,9 +53,15 @@ test('and the screen says why, rather than looking as though it lost them', () =
   // The empty state is the one place a person is looking when the built-ins are not
   // where they left them, so it carries the reason and the way back.
   const said = code()
-  expect(said).toMatch(/numbered, not named/)
-  expect(said).toMatch(/Clear the search/)
   expect(said).toMatch(/Nothing of yours matches/)
+  expect(said).toMatch(/\bNOT_SEARCHED\b/)
+
+  // *Moved 2026-08-12*: the sentence itself is `builtins.NOT_SEARCHED` now, because the
+  // spray's picker offers the same 30 behind a field of its own and one fact worded twice
+  // is two facts as soon as either is edited. The screen still says it; it imports it.
+  expect(said).toMatch(/import \{[^}]*\bNOT_SEARCHED\b[^}]*\} from '\.\.\/builtins\.js'/)
+  expect(NOT_SEARCHED).toMatch(/numbered, not named/)
+  expect(NOT_SEARCHED).toMatch(/Clear the search/)
 })
 
 test('the field is not permanent furniture and never takes focus', () => {

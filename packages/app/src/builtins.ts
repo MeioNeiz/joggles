@@ -127,6 +127,22 @@ export const builtinById = (id: string): Builtin | null =>
   BUILTINS.find((b) => b.id === id) ?? null
 
 /**
+ * Why a search never reaches these 30, in the words a screen prints.
+ *
+ * Track 20 numbered them rather than naming them, because a name read off an offline
+ * render is a guess about content nobody has watched, and a confident wrong name is
+ * something a person then searches for and fails to find (`notes/library.md`). So there
+ * is no text to match on, and a query over these labels would hide most of them.
+ *
+ * It lives beside the built-ins rather than inside the screen that first said it because
+ * two screens now offer the same 30 behind a field of their own - the Show tab's grid and
+ * the spray's picker - and the fact is about the items, not about either screen.
+ */
+export const NOT_SEARCHED =
+  'Pictures and animations are numbered, not named, so search cannot reach them. ' +
+  'Clear the search to browse them.'
+
+/**
  * The one command that shows a built-in.
  *
  * The addressing lives here and nowhere else, so a screen cannot get it wrong and there

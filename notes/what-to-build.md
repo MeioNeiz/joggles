@@ -168,9 +168,14 @@ missed rather than that the feature is missing, and the two want different work.
 the built mark for this found two things no test covers, both of which would keep it
 wrong however large the glyph gets:
 
-- **One built-in animation is marked still.** `builtinTile` derives `moves` from
-  `b.frames > 1`, and `anim-6` ("Animation 6") has a single frame in its bank, so the one
-  tile in the Animations section that most needs the mark is the one that does not get it.
+- ~~**One built-in animation is marked still.**~~ *Corrected within the hour, 2026-08-12:
+  this called it a defect and it is not one, and the label was wrong too.* `builtinTile`
+  derives `moves` from `b.frames > 1`, and `anim-6` ("Animation **7**", since `labelFor`
+  numbers from `arg + 1`) does hold exactly one frame, so it gets no mark. But **a bank
+  holding one frame does not animate**: `frames > 1` is the fact and `kind === 'animation'`
+  is only the drawer it is filed in, so the mark is right to stay off it. The real work is
+  that nothing in the code says this, which is why it read as a bug on sight and will
+  again.
 - **The mark tests for scroll, not for motion.** `mineTile` reads
   `pieceFor(item).motion.kind === 'scroll'`, so the vertical bounce track 39 is adding
   will read as still on the day it lands, which is the same class of drift as the preview
@@ -402,6 +407,25 @@ around it: an unasked pair shows something for a moment and can always clear it,
 still leans on your own handed-out fleet and on opt-in ("Consent is the governing
 constraint" above), and nothing here persists on a stranger's device or writes anything they
 cannot undo.
+
+**Built the same day, as track 42**, on "Yes build it into the app please". `app/src/spray.ts`
+plus `screens/Spray.tsx`, off the Glasses tab: pick a picture, turn it on, and every pair in
+range that is not yours shows it once. Every design rule above is in it, and three of them are
+enforced rather than intended, by crawls and by a mock pair whose `save` throws: no flash, no
+second `LiveSender`, no platform handle on screen. Two things the section above did not decide
+and the code had to. **A spray lets your own pair go**, because `BleScanner.scan` calls
+`release()` and a spray running beside a held pair would cancel it while the app still claimed
+it was connected. And **built-ins are offered beside your own pictures**, because `ANIM n`
+costs one command, keeps animating with the phone away, and is the better walk-by trick than
+a still.
+
+**What the code does NOT do, and it is the half that decides whether any of this works**: it
+sends no `SMVEW 02`. `end('keep')` disconnects and leaves DIY alone, exactly as the CLI's
+broadcast does, and it rests on the panel module holding its last frame (*derived*, `CLAUDE.md`'s
+mental model). This section says `SMVEW 02` copies the buffer to SRAM, which is a second
+*derived* route to the same hope; nobody has watched either. **So the first hardware question
+is whether a sprayed picture survives the disconnect at all**, and it needs two pairs. Until
+then the feature is written, tested and unwitnessed.
 
 ## Reaching other makes of glasses
 

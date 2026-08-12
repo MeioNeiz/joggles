@@ -18,6 +18,9 @@
  *    `spray.test.ts` crawls this file to keep it that way.
  *  - **The wearer undoes it in one action**: a power cycle, their own button, or their
  *    app reconnecting. Their saved message is in flash and is untouched.
+ *  - **Nothing else about their pair is touched**, `LIGHT` included. A spray on a pair
+ *    turned down to level 1 is a dim spray, and that is the right answer: brightness is
+ *    the wearer's setting, and changing it would outlast the picture.
  *  - **One still frame per pair, never a loop.** That is what keeps a spray out of the
  *    5 to 30 Hz band safety item 7 in `notes/app-plan.md` is about: the harm vector is
  *    the content, and a spray cannot animate what it sends. (A built-in *does* animate,
@@ -52,6 +55,7 @@
  */
 import { Grid, content, protocol as p, viewport } from '@joggles/core'
 import { type Builtin, commandFor } from './builtins.js'
+import type { TextFile } from './nicknames.js'
 
 /** What one advert gives us. `Discovered` satisfies it; the id goes no further. */
 export interface Advert {
@@ -288,6 +292,10 @@ export function runSpray(
 
     await deps.scan((advert) => {
       const name = advert.name
+      // A callback after `stop()` is a scan the platform has not stopped yet. Acting on
+      // one would queue a pair nobody is going to reach and put a line on a log the
+      // person has already finished with.
+      if (stopped) return
       if (!name || queue.has(name) || handled.has(name) || said.has(name)) return
       const verdict = decide(name, payload.hash, decided)
       if (verdict === 'send') {
@@ -367,6 +375,153 @@ export function runSpray(
       stopped = true
     },
     done: loop(),
+  }
+}
+
+/**
+ * What the phone remembers between sprays: the marks, and who has shown what.
+ *
+ * Its own file on disk (`spray-store.ts`), never the wear count's, for the reason the
+ * other stores give: losing this costs a stranger one repeated picture, losing a wear
+ * count costs hardware, and they must not share a failure.
+ *
+ * `done` is a `Map`, not an object, for review-10's reason: a plain-object map answers
+ * for every member of `Object.prototype`, and a pair advertising as `__proto__` would
+ * write the prototype instead of an entry.
+ */
+export interface SprayMemory {
+  /** The marks as arrays, in the order they were made, for a list on the screen. */
+  marks(): { never: string[]; always: string[] }
+  /** `null` clears whatever mark this pair has. A pair is never in both lists. */
+  mark(name: string, as: 'never' | 'always' | null): void
+  markOf(name: string): 'never' | 'always' | null
+  /** The two marked sets plus `done`, with `ours` supplied by the caller. */
+  policy(ours: ReadonlySet<string>): SprayPolicy
+  /** Note that this pair has shown this payload. Called on a `lit` event only. */
+  lit(name: string, hash: string): void
+  /** How many pairs are remembered as having shown something. */
+  sprayed(): number
+  /** Forget who has shown what, keeping the marks. Everyone is eligible again. */
+  forget(): void
+}
+
+/**
+ * The most pairs remembered as sprayed, oldest evicted first.
+ *
+ * A weekend of festival could otherwise grow this file without bound. Eviction costs a
+ * re-spray of the pair heard longest ago, which is the cheapest thing here to be wrong
+ * about, and 400 is far more than one radio can reach in a day.
+ */
+const MAX_DONE = 400
+
+/** Marked pairs are typed in one at a time by a person, so this is only a file bound. */
+const MAX_MARKS = 200
+
+const names = (raw: unknown): string[] => {
+  if (!Array.isArray(raw)) return []
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const name of raw) {
+    if (typeof name !== 'string' || name === '' || seen.has(name)) continue
+    seen.add(name)
+    out.push(name)
+    if (out.length >= MAX_MARKS) break
+  }
+  return out
+}
+
+interface Shown {
+  hash: string
+  at: number
+}
+
+/** What of a parsed file survives. Anything malformed falls back; nothing throws. */
+export function reviveSpray(raw: unknown): {
+  never: string[]
+  always: string[]
+  done: Map<string, Shown>
+} {
+  const root = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
+  const done = new Map<string, Shown>()
+  if (typeof root.done === 'object' && root.done !== null) {
+    for (const [name, entry] of Object.entries(root.done as Record<string, unknown>)) {
+      if (name === '' || typeof entry !== 'object' || entry === null) continue
+      const { hash, at } = entry as Record<string, unknown>
+      if (typeof hash !== 'string' || hash === '') continue
+      done.set(name, { hash, at: typeof at === 'number' && Number.isFinite(at) ? at : 0 })
+    }
+  }
+  const never = names(root.never)
+  // A pair in both lists is a file that has been edited by hand or written by an older
+  // shape. The refusal wins, because it is the half a person asked for.
+  const always = names(root.always).filter((name) => !never.includes(name))
+  return { never, always, done }
+}
+
+export function createSprayMemory(file: TextFile, now: () => number = Date.now): SprayMemory {
+  let state: ReturnType<typeof reviveSpray>
+  try {
+    const text = file.read()
+    state = reviveSpray(text === null ? null : JSON.parse(text))
+  } catch {
+    state = reviveSpray(null)
+  }
+
+  const persist = () => {
+    try {
+      file.write(
+        JSON.stringify({
+          never: state.never,
+          always: state.always,
+          done: Object.fromEntries(state.done),
+        }),
+      )
+    } catch {
+      // A phone that will not write still keeps the marks for this session, and the
+      // worst outcome is a stranger seeing the same picture twice.
+    }
+  }
+
+  return {
+    marks: () => ({ never: [...state.never], always: [...state.always] }),
+
+    mark(name, as) {
+      if (name === '') return
+      state.never = state.never.filter((n) => n !== name)
+      state.always = state.always.filter((n) => n !== name)
+      if (as === 'never' && state.never.length < MAX_MARKS) state.never.push(name)
+      if (as === 'always' && state.always.length < MAX_MARKS) state.always.push(name)
+      persist()
+    },
+
+    markOf: (name) =>
+      state.never.includes(name) ? 'never' : state.always.includes(name) ? 'always' : null,
+
+    policy: (ours) => ({
+      never: new Set(state.never),
+      always: new Set(state.always),
+      ours,
+      done: new Map([...state.done].map(([name, shown]) => [name, shown.hash])),
+    }),
+
+    lit(name, hash) {
+      if (name === '') return
+      state.done.set(name, { hash, at: now() })
+      if (state.done.size > MAX_DONE) {
+        const oldest = [...state.done].sort((a, b) => a[1].at - b[1].at)
+        for (const [name] of oldest.slice(0, state.done.size - MAX_DONE)) {
+          state.done.delete(name)
+        }
+      }
+      persist()
+    },
+
+    sprayed: () => state.done.size,
+
+    forget() {
+      state.done.clear()
+      persist()
+    },
   }
 }
 

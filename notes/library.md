@@ -84,6 +84,15 @@ means there is no text to match on. Three honest options, in order of preference
 
 Take 1 now and 2 after the sitting. Do not invent names from the renders.
 
+**This is now a rule two screens obey, so it is stated once in code.** The Show tab's grid
+(track 28) and the spray's picker (2026-08-12, Jacob: *"let me search in the what to
+spray"*) both offer the same 30 behind a field of their own, and both narrow the user's own
+items through the one matcher in `app/src/library.ts`. The sentence a person reads when the
+built-ins step aside is `builtins.NOT_SEARCHED`, which moved out of `screens/Library.tsx`
+for exactly this reason: one fact worded twice becomes two facts the moment either is
+edited. `screens/spray-screen.test.ts` holds the picker to the same four rules
+`library-screen.test.ts` holds the front door to.
+
 **One structural fact that helps: 11 of the 30 built-ins are exactly symmetric about the
 nose bridge** (9 mirrored, 2 straight copies), *verified* by walking `builtins-data.ts`.
 The panel is two 9x9 fully-alive squares with a 6-row bridge between them, so per-eye is

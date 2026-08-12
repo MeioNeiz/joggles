@@ -32,6 +32,7 @@ import {
   StyleSheet,
   View,
 } from 'react-native'
+import { type Theme, useTheme } from '../theme.js'
 import { type Box, type Cell, cellAt, full } from './canvas.js'
 
 /** Rows top-first, because row 0 is the bottom of the panel. */
@@ -58,33 +59,25 @@ const styles = StyleSheet.create({
   off: { backgroundColor: '#1e1e1e' },
   /** Unlit, and liable to be chewed by the nose bridge. */
   fringe: { backgroundColor: '#141414' },
-  // The same three greens as the compose preview. The panel's own steps are far
-  // subtler (*verified*: adjacent bands at different levels were not separable), so
-  // these say "there is grey here" rather than rendering it.
-  level1: { backgroundColor: '#14532d' },
-  level2: { backgroundColor: '#22c55e' },
-  level3: { backgroundColor: '#4ade80' },
 })
 
 /**
- * Every appearance a pixel can have, built once per size.
+ * Every appearance a pixel can have, built once per size and theme.
  *
  * A `style={[a, b]}` literal is a fresh array on each render, so the prop is unequal
  * every frame and all 216 views take a native update even when nothing about them
  * changed. Building the table means an unchanged pixel diffs to the same reference.
+ *
+ * The lit colours are the connected pair's rather than a fixed green, which is the
+ * same three the compose preview uses because both read them off `theme.ts`.
  */
-function skins(size: number) {
+function skins(size: number, levels: Theme['levels']) {
   const box = { width: size, height: size, margin: GAP / 2, borderRadius: 2 }
   return {
     hole: [box, styles.hole],
     off: [box, styles.off],
     fringe: [box, styles.fringe],
-    lit: [
-      [box, styles.off],
-      [box, styles.level1],
-      [box, styles.level2],
-      [box, styles.level3],
-    ],
+    lit: [[box, styles.off], ...levels.map((colour) => [box, { backgroundColor: colour }])],
   }
 }
 
@@ -133,6 +126,7 @@ export interface PadProps {
 
 export const Pad = memo(function Pad({ bitmap, onCell, onLift, disabled }: PadProps) {
   const [box, setBox] = useState<Box | null>(null)
+  const theme = useTheme()
 
   /**
    * Where the pixels actually are inside the measured view.
@@ -160,7 +154,7 @@ export const Pad = memo(function Pad({ bitmap, onCell, onLift, disabled }: PadPr
     }
   }, [box])
 
-  const look = useMemo(() => skins(grid.size), [grid.size])
+  const look = useMemo(() => skins(grid.size, theme.levels), [grid.size, theme.levels])
 
   const measure = (e: LayoutChangeEvent) => {
     const { width, height } = e.nativeEvent.layout

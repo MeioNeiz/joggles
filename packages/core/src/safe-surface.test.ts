@@ -59,13 +59,36 @@ test('nothing reachable from the barrel can address the OTA service', () => {
   }
 })
 
+/**
+ * Comments stripped, so prose cannot pass or fail a code assertion.
+ *
+ * Added 2026-08-12: `gif.ts` failed this crawl by *promising* in its docblock not to use
+ * `Buffer`, which is the guard's own rule restated and the opposite of a violation. The
+ * repo already settled this shape elsewhere (`effects-ui/wiring.test.ts`, and the spray
+ * track's crawl) - a docblock has to stay free to name what the code may not do.
+ *
+ * The OTA crawl above deliberately does NOT use this: naming `fd00` anywhere, comment
+ * included, is worth failing over, because that one is the brick guard.
+ */
+const codeOf = (src: string): string =>
+  src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+
 test('nothing reachable from the barrel needs Node', () => {
   for (const file of MODULES) {
-    const src = readFileSync(file, 'utf8')
+    const src = codeOf(readFileSync(file, 'utf8'))
     expect(src).not.toMatch(/from\s+'node:/)
     expect(src).not.toMatch(/\bBuffer\b/)
     expect(src).not.toMatch(/\bprocess\.\w/)
   }
+})
+
+test('stripping comments does not blind the Node crawl', () => {
+  // Guards the stripper: without this, a regex that ate the whole file would make the
+  // assertions above vacuous in exactly the way `reachable()` is guarded against.
+  const stripped = codeOf('/** no Buffer here */\nconst x = Buffer.from([1])\n')
+  expect(stripped).not.toContain('no Buffer here')
+  expect(stripped).toMatch(/\bBuffer\b/)
+  expect(codeOf("// from 'node:fs'\nimport { x } from 'node:fs'\n")).toMatch(/from\s+'node:/)
 })
 
 test('firmware.js is the only way to the flash-writing half', async () => {

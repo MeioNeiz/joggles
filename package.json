@@ -15,6 +15,7 @@
     "flash": "bun run packages/cli/src/flash.ts",
     "build-firmware": "bun run research/tools/build-firmware.ts",
     "dumpcheck": "bun run research/tools/dumpcheck.ts",
-    "bankdump": "bun run research/tools/bankdump.ts"
+    "bankdump": "bun run research/tools/bankdump.ts",
+    "animpack": "bun run research/tools/animpack.ts"
   }
 }

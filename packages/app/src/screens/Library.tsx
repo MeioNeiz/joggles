@@ -45,8 +45,25 @@
  */
 import { content, display, motifs, viewport } from '@joggles/core'
 import { memo, useCallback, useMemo, useState } from 'react'
-import { Modal, Pressable, SectionList, StyleSheet, Text, TextInput, View } from 'react-native'
-import { ANIMATIONS, type Builtin, IMAGES, builtinById } from '../builtins.js'
+import * as animations from '../animations.js'
+import {
+  Modal,
+  Pressable,
+  SectionList,
+  type StyleProp,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type ViewStyle,
+} from 'react-native'
+import {
+  ANIMATIONS,
+  type Builtin,
+  IMAGES,
+  NOT_SEARCHED,
+  builtinById,
+} from '../builtins.js'
 import { type SavedItem, search } from '../library.js'
 import {
   type Showable,
@@ -58,7 +75,7 @@ import {
 } from '../one-tap.js'
 import { MIN_ITEMS, reelResident } from '../reel.js'
 import { settings } from '../settings-store.js'
-import { useTheme } from '../theme.js'
+import { DEFAULT_THEME, THEMES, useTheme } from '../theme.js'
 import { ActionMenu, Chip, ChipRow, INK, Link, type MenuOption, type Status } from '../ui.js'
 
 /** Rows top-first, because row 0 is the bottom of the panel. As `Preview.tsx`. */
@@ -80,15 +97,11 @@ const PER_ROW = 3
  */
 const SEARCH_FROM = PER_ROW * 3
 
-/**
- * What search does not reach, said once, where a person is looking when it matters.
- *
- * The alternative is a grid that appears to have lost 30 things. `notes/library.md`
- * has the argument; the short version is that naming them is a hardware sitting.
+/*
+ * What search does not reach is `builtins.NOT_SEARCHED`, printed on the empty state
+ * below: a grid that appears to have lost 30 things is the alternative, and the sentence
+ * moved out of this file once the spray's picker needed the same one.
  */
-const NOT_SEARCHED =
-  'Pictures and animations are numbered, not named, so search cannot reach them. '
-  + 'Clear the search to browse them.'
 
 interface TileData {
   key: string
@@ -172,6 +185,7 @@ export function Library({
   onDelete,
   onRestore,
   onCycle,
+  onOpenPack,
 }: {
   items: SavedItem[] | null
   trouble: string | null
@@ -188,6 +202,13 @@ export function Library({
   onDelete: (item: SavedItem) => Promise<void>
   /** Puts a deleted item back. The undo half of confirm-free delete. */
   onRestore: (item: SavedItem) => Promise<void>
+  /**
+   * Open the imported animation pack, which is its own screen rather than a section here.
+   *
+   * The built-in sections below are 30 tiles you scroll past; the pack is hundreds of
+   * named things and needs a search box of its own, so it gets a route instead of a row.
+   */
+  onOpenPack?: () => void
 }) {
   const theme = useTheme()
   const [status, setStatus] = useState<Status | null>(null)
@@ -590,6 +611,14 @@ export function Library({
                 <Chip on={only === 'still'} onPress={() => setOnly('still')} label="Still" />
               </ChipRow>
             ) : null}
+            {!searching && onOpenPack && animations.PACK.length > 0 ? (
+              <View style={styles.packRow}>
+                <Link
+                  label={`Imported animations (${animations.PACK.length}) ›`}
+                  onPress={onOpenPack}
+                />
+              </View>
+            ) : null}
             {status ? (
               <View style={styles.statusRow}>
                 <Text
@@ -692,6 +721,7 @@ const styles = StyleSheet.create({
   header: { gap: 6, marginBottom: 6 },
   title: { color: INK.text, fontSize: 22, fontWeight: '700' },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  packRow: { paddingBottom: 4, paddingTop: 8 },
   searchRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   search: {
     flex: 1,
@@ -759,20 +789,22 @@ const styles = StyleSheet.create({
   pixelRow: { flexDirection: 'row' },
   pixel: { width: 3, height: 4, margin: 0.5, borderRadius: 1, backgroundColor: '#191919' },
   dead: { backgroundColor: 'transparent' },
-  level1: { backgroundColor: '#14532d' },
-  level2: { backgroundColor: '#22c55e' },
-  level3: { backgroundColor: '#4ade80' },
 })
 
-const HOLE = [styles.pixel, styles.dead]
-const LIT = [
-  styles.pixel,
-  [styles.pixel, styles.level1],
-  [styles.pixel, styles.level2],
-  [styles.pixel, styles.level3],
-]
+/** Levels 0 to 3, where 0 is the unlit pixel this grid owns. As `Preview.tsx`. */
+type Lit = readonly StyleProp<ViewStyle>[]
 
-const skin = (alive: boolean, level: number) => (alive ? (LIT[level] ?? LIT[0]) : HOLE)
+/** One table per theme, built once, so a tile's pixels keep their references. */
+const HOLE = [styles.pixel, styles.dead]
+const LIT: Record<string, Lit> = Object.fromEntries(
+  THEMES.map((t) => [
+    t.id,
+    [styles.pixel, ...t.levels.map((colour) => [styles.pixel, { backgroundColor: colour }])],
+  ]),
+)
+
+const skin = (lit: Lit, alive: boolean, level: number) =>
+  alive ? (lit[level] ?? lit[0]) : HOLE
 
 /**
  * One small frame at panel coordinates. `glow` outlines the tile that is on now;
@@ -795,13 +827,15 @@ const Tile = memo(function Tile({
   glow: string | null
   moves?: boolean
 }) {
+  const theme = useTheme()
   if (frame === null) return <View style={styles.noTile} />
+  const lit = LIT[theme.id] ?? LIT[DEFAULT_THEME.id]
   return (
     <View style={[styles.panel, glow !== null && { borderColor: glow }]}>
       {ORDER.map((row) => (
         <View key={row} style={styles.pixelRow}>
           {ALIVE[row].map((alive, col) => (
-            <View key={col} style={skin(alive, frame[row]?.[col] ?? 0)} />
+            <View key={col} style={skin(lit, alive, frame[row]?.[col] ?? 0)} />
           ))}
         </View>
       ))}

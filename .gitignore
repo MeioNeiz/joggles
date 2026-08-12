@@ -20,6 +20,10 @@ firmware/
 # Per-device flash-wear counts. Local to this host, and exportable rather than shared.
 .joggles/
 
+# animpack's downloaded source archives: open-licence, but not ours to redistribute in
+# git. Only the converted data file and the licence manifest are checked in.
+research/animpack-sources/
+
 # Bun installs these; noble is rebuilt locally via trustedDependencies (see README)
 node_modules/
 

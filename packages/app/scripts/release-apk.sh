@@ -36,10 +36,30 @@ cd "$app"
 
 cp release.keystore android/app/debug.keystore
 
+version="$(node -p "require('$app/app.json').expo.version")"
+code="$(node -p "require('$app/app.json').expo.android.versionCode")"
+
+# app.json is the only place a version is written, but android/ is generated and only
+# `expo prebuild` copies the numbers across, and prebuild is skipped above whenever the
+# folder already exists. Left alone, a bumped app.json renames the file and nothing else:
+# the APK inside still reports the old version, so Android sees no update to install and
+# the release asset and the manifest disagree with no error anywhere.
+node - "$app/android/app/build.gradle" "$version" "$code" <<'SYNC'
+const fs = require('fs')
+const [file, version, code] = process.argv.slice(2)
+const before = fs.readFileSync(file, 'utf8')
+const after = before
+  .replace(/versionCode \d+/, `versionCode ${code}`)
+  .replace(/versionName "[^"]*"/, `versionName "${version}"`)
+if (!/versionCode \d+/.test(before) || !/versionName "[^"]*"/.test(before)) {
+  throw new Error(`no version fields in ${file}: the template moved them`)
+}
+fs.writeFileSync(file, after)
+SYNC
+
 cd android
 ./gradlew assembleRelease -PreactNativeArchitectures=armeabi-v7a,arm64-v8a
 
-version="$(node -p "require('$app/app.json').expo.version")"
 out="$app/dist"
 mkdir -p "$out"
 cp "$app/android/app/build/outputs/apk/release/app-release.apk" "$out/joggles-$version.apk"

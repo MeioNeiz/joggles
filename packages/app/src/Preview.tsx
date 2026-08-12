@@ -23,8 +23,9 @@
  */
 import { display, viewport } from '@joggles/core'
 import { memo, useEffect, useMemo, useState } from 'react'
-import { StyleSheet, View } from 'react-native'
+import { type StyleProp, StyleSheet, View, type ViewStyle } from 'react-native'
 import { stepClock } from './clock.js'
+import { DEFAULT_THEME, THEMES, type Theme, useTheme } from './theme.js'
 
 /** Rows top-first, because row 0 is the bottom of the panel. */
 const ORDER = Array.from({ length: display.ROWS }, (_, i) => display.ROWS - 1 - i)
@@ -42,37 +43,50 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row' },
   pixel: { width: 11, height: 11, margin: 1, borderRadius: 2, backgroundColor: '#1e1e1e' },
   dead: { backgroundColor: 'transparent' },
-  // Levels 1 to 3 as three separable greens. The panel's own steps are much subtler
-  // than this (*verified*: six-column bands at different levels were not separable
-  // side by side), so read these as "there is grey here", not as a rendition of it.
-  level1: { backgroundColor: '#14532d' },
-  level2: { backgroundColor: '#22c55e' },
-  level3: { backgroundColor: '#4ade80' },
 })
 
+/** Levels 0 to 3, where 0 is the unlit pixel this grid owns. */
+type Lit = readonly StyleProp<ViewStyle>[]
+
 /**
- * Every appearance a pixel can have, built once: a fresh `[a, b]` style array per
- * render makes all 216 views take a native update even when nothing changed.
+ * Every appearance a pixel can have, per theme, built once: a fresh `[a, b]` style
+ * array per render makes all 216 views take a native update even when nothing changed.
+ *
+ * Which hue is the connected pair's business (`theme.ts`), so the table is built for
+ * every theme at load rather than for the current one at render, and a pixel that did
+ * not change still diffs to the same reference after a theme switch.
  */
 const HOLE = [styles.pixel, styles.dead]
-const LIT = [
-  styles.pixel,
-  [styles.pixel, styles.level1],
-  [styles.pixel, styles.level2],
-  [styles.pixel, styles.level3],
-]
+const LIT: Record<string, Lit> = Object.fromEntries(
+  THEMES.map((t) => [
+    t.id,
+    [styles.pixel, ...t.levels.map((colour) => [styles.pixel, { backgroundColor: colour }])],
+  ]),
+)
 
-const skin = (alive: boolean, level: number) => (alive ? (LIT[level] ?? LIT[0]) : HOLE)
+const litFor = (theme: Theme): Lit => LIT[theme.id] ?? LIT[DEFAULT_THEME.id]
+
+const skin = (lit: Lit, alive: boolean, level: number) =>
+  alive ? (lit[level] ?? lit[0]) : HOLE
 
 /**
  * One row, redrawn only when its own values change: `levels` is 24 digits, so
- * React's shallow compare settles it in one string comparison.
+ * React's shallow compare settles it in one string comparison. `lit` is one reference
+ * per theme, so it costs the compare nothing and still repaints when the pair changes.
  */
-const Row = memo(function Row({ row, levels }: { row: number; levels: string }) {
+const Row = memo(function Row({
+  row,
+  levels,
+  lit,
+}: {
+  row: number
+  levels: string
+  lit: Lit
+}) {
   return (
     <View style={styles.row}>
       {ALIVE[row].map((alive, col) => (
-        <View key={col} style={skin(alive, Number(levels[col]))} />
+        <View key={col} style={skin(lit, alive, Number(levels[col]))} />
       ))}
     </View>
   )
@@ -87,11 +101,14 @@ function strings(frame: number[][]): string[] {
   })
 }
 
+/** The one place both components go through, so the theme is read once, here. */
 const Strip = memo(function Strip({ rows }: { rows: string[] }) {
+  const theme = useTheme()
+  const lit = litFor(theme)
   return (
     <View style={styles.panel}>
       {rows.map((levels, i) => (
-        <Row key={ORDER[i]} row={ORDER[i]} levels={levels} />
+        <Row key={ORDER[i]} row={ORDER[i]} levels={levels} lit={lit} />
       ))}
     </View>
   )

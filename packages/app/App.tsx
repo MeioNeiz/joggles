@@ -25,10 +25,12 @@
  * The accent colour is the connected pair's theme (`settings.theme`), so the whole
  * app answers "which pair am I on" at a glance. Disconnected, it wears the default.
  */
-import { Glasses, playlist, playlist as pl } from '@joggles/core'
+import { Glasses, type anim, playlist, playlist as pl } from '@joggles/core'
 import { StatusBar } from 'expo-status-bar'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { BackHandler, StyleSheet, View } from 'react-native'
+import { FramePlayer } from './src/anim-player.js'
+import type * as animations from './src/animations.js'
 import { pairWords } from './src/ble-words.js'
 import type { SavedItem } from './src/library.js'
 import { library } from './src/library-store.js'
@@ -42,6 +44,7 @@ import {
 } from './src/one-tap.js'
 import { PanelSession } from './src/panel-session.js'
 import { cyclerFor, planReel } from './src/reel.js'
+import { AnimationPack } from './src/screens/AnimationPack.js'
 import { Create } from './src/screens/Create.js'
 import { GlassesScreen } from './src/screens/GlassesScreen.js'
 import { Library } from './src/screens/Library.js'
@@ -74,8 +77,20 @@ export default function App() {
   const [showing, setShowing] = useState<string | null>(null)
   /** Bumped when a per-pair setting changes, so the theme re-reads. */
   const [prefsAt, setPrefsAt] = useState(0)
+  /** The imported animation pack, a full-screen route off the Show tab. */
+  const [packOpen, setPackOpen] = useState(false)
+  /** Which pack row the frame player is looping, or null. */
+  const [playingPack, setPlayingPack] = useState<string | null>(null)
 
   const session = useRef<PanelSession | null>(null)
+  /**
+   * The one frame player, beside the one `PanelSession` and for the same reason.
+   *
+   * It drives the pack's live route by pushing frames into the session's sender, so two
+   * of them would be two owners of one panel. Built per connection and stopped on the way
+   * out; `anim-player.ts` explains why it never clears and never leaves DIY.
+   */
+  const player = useRef<FramePlayer | null>(null)
   // The reel, plus the set it was built for: a different set is a different payload.
   const cycler = useRef<{ current: pl.Cycler | null; key: string }>({
     current: null,
@@ -89,6 +104,7 @@ export default function App() {
   // Refs, because the handler is registered once and must read the current values.
   const tabRef = useRef(tab)
   const wireRef = useRef(false)
+  const packRef = useRef(false)
   useEffect(() => {
     tabRef.current = tab
   }, [tab])
@@ -96,10 +112,17 @@ export default function App() {
     wireRef.current = wire
   }, [wire])
   useEffect(() => {
+    packRef.current = packOpen
+  }, [packOpen])
+  useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       // Swallowed mid-upload for the same reason the tab bar is: leaving the app
       // strands a DATS handshake the device is still waiting to complete.
       if (wireRef.current) return true
+      if (packRef.current) {
+        setPackOpen(false)
+        return true
+      }
       if (tabRef.current !== 'show') {
         setTab('show')
         return true
@@ -145,6 +168,10 @@ export default function App() {
 
   function open(g: Glasses) {
     session.current = new PanelSession(g, () => {})
+    player.current = new FramePlayer({
+      target: () => session.current!.live(),
+      onError: () => setPlayingPack(null),
+    })
     setGlasses(g)
     setLive(false)
     settings.setLastPair(g.name)
@@ -157,6 +184,11 @@ export default function App() {
   async function close() {
     const s = session.current
     const g = glasses
+    // Before the session goes: the loop writes through it, so a player left running
+    // would push frames into a sender nobody owns.
+    await player.current?.stop().catch(() => {})
+    player.current = null
+    setPlayingPack(null)
     session.current = null
     setGlasses(null)
     setLive(false)
@@ -181,6 +213,11 @@ export default function App() {
       return { showing: false, spent: false, message: 'Nothing connected.' }
     }
     cancelled.current = false
+    // A tap takes the panel: `runTap` will `dropped()` the sender for anything that does,
+    // and a loop still pushing frames into it would be writing through a sender nobody
+    // owns. The player notices a stopped sender by itself, but only this knows to stop
+    // first and clear the badge.
+    if (playingPack !== null) await stopPack()
     const deps: TapDeps = {
       glasses: g,
       live: () => s.live(),
@@ -209,6 +246,45 @@ export default function App() {
     } finally {
       setWire(false)
     }
+  }
+
+  /**
+   * `tap` with the progress callback in the slot `useTapFlow` actually passes it in.
+   *
+   * `tap`'s third parameter is the library key; `useTapFlow` calls its `onTap` with the
+   * progress callback third. Screens that declared `onTap` as two parameters therefore fed
+   * the callback into `key` and left `progress` undefined, so **the upload bar never moved
+   * on the Create tab** - track 34's whole feature, silently dead on Message and Effect -
+   * and `showing` was handed a function where a string belongs. Found 2026-08-12 while
+   * wiring the animation pack onto the same helper. `Library.tsx` is unaffected: it calls
+   * `onTap` itself with a real key and never goes through the flow.
+   */
+  const tapWithProgress = (
+    what: Showable,
+    plan: Tap,
+    progress?: (sent: number, total: number) => void,
+  ): Promise<TapResult> => tap(what, plan, null, progress)
+
+  /**
+   * Play a pack animation as frames, the one route that shows them as frames.
+   *
+   * Live work, so `live` goes up: a `MODE` from anywhere discards it. `showing` clears
+   * because a pack row is not a library item and the badge would otherwise name whatever
+   * was on the panel before.
+   */
+  function playPack(row: animations.PackRow, animation: anim.Animation) {
+    const p = player.current
+    if (p === null) return
+    p.play(animation)
+    setPlayingPack(row.id)
+    setLive(true)
+    setShowing(null)
+  }
+
+  /** Stop the loop. The last frame stays lit, so the panel still holds live work. */
+  async function stopPack() {
+    await player.current?.stop().catch(() => {})
+    setPlayingPack(null)
   }
 
   /** Put a deleted item back: the undo half of the library's confirm-free delete. */
@@ -283,7 +359,18 @@ export default function App() {
   let body: React.ReactNode
   switch (tab) {
     case 'show':
-      body = (
+      body = packOpen ? (
+        <AnimationPack
+          ctx={{ connected: glasses !== null, resident, liveWork: live }}
+          busy={wire}
+          speed={settings.defaults().speed}
+          playingId={playingPack}
+          onTap={tapWithProgress}
+          onPlay={playPack}
+          onStop={() => void stopPack()}
+          onBack={() => setPackOpen(false)}
+        />
+      ) : (
         <Library
           items={items}
           trouble={libTrouble}
@@ -303,6 +390,7 @@ export default function App() {
           }}
           onRestore={restore}
           onCycle={cycle}
+          onOpenPack={() => setPackOpen(true)}
         />
       )
       break
@@ -313,7 +401,7 @@ export default function App() {
           resident={resident}
           liveWork={live}
           busy={wire}
-          onTap={tap}
+          onTap={tapWithProgress}
           onKept={refreshItems}
           editing={editing}
           onTook={() => setEditing(null)}

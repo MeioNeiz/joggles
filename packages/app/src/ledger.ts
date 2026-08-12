@@ -122,3 +122,13 @@ export function fileStore(): budget.LedgerStore {
 }
 
 export const flashBudget = new budget.FlashBudget(fileStore())
+
+/**
+ * Every pair this phone has ever saved to.
+ *
+ * The strongest record of "one of ours" the app holds, and the spray's default exclusion
+ * leans on it (`spray.ts`): a pair whose flash we have spent is not a stranger. Read off
+ * the same in-memory ledger the guard uses, so it costs no file read, and it names
+ * advert names because that is what every store here is keyed on.
+ */
+export const savedDevices = (): string[] => Object.keys(load())
