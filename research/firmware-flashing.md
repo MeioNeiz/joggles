@@ -19,6 +19,10 @@ aborted or corrupt transfer costs nothing. What costs everything is ctrl `03`.
 the size envelope, the safe procedure, and the one brick vector reachable over the air.
 **Reproduce:** see "Reproducing the disassembly" at the end.
 
+**On the ethics of flashing a product we did not make:** `notes/firmware-design.md`, "Whose
+glasses these are, and why modifying them is fair". Short version: own units only, no vendor
+binaries redistributed, patch in place so a unit returns to stock, and the risks fall on us.
+
 Offsets here are `abs`, i.e. flash addresses. `body` offsets into the deobfuscated
 OTA payload relate to them by `abs = body + 0x16800`.
 
@@ -86,34 +90,12 @@ anything other than all-`FF`, the firmware is there and this is a config fix.
   not insurance. `hardware-access.md` said this and was treated as optional.
 - An unexplained reading from a device is a stop condition, not a footnote.
 
-## Corrections to `firmware-image-format.md`
-
-Three claims in that document were wrong. They are corrected here rather than
-deleted, because each was reasonable from the evidence available at the time.
-
-**Wrong: "the ~90 KB below `abs 0x16800` holds the bootloader".** That region is the
-**BLE stack** (Panchip call it the SoftDevice, having borrowed Nordic's vocabulary).
-The bootloader is 8 KB at `abs 0x3dc00`, at the *top* of flash. *verified* from
-Panchip's `section_cfg.h`, which defines `FLASH_SOFTDEVICE_SIZE 0x00016800` and
-`FLASH_BOOTLOADER_ADDR 0x0003DC00`. Our app base is not a vendor choice at all; it
-is the stock SDK boundary between stack and application.
-
-**Wrong: "there is no vendor image to restore it from".** The public SDK ships
-`src/stack/softdevice/stack_1.0.0.hex`, spanning `0x0` to `0x1677c` (92,028 bytes),
-which is exactly that region. *verified* by parsing the hex. Whether it is the same
-stack build our unit runs is *unverified*, so it is a fallback, not a drop-in.
-
-**Wrong: "no literal points at a staging base", concluding the staging question was
-open.** There is a staging bank, at `abs 0x29400`. The base is not a literal in the
-code; it is a runtime value loaded from a const table at `abs 0x26930`, which is why
-scanning for literals missed it. *verified* two independent ways, below.
-
 ## Corrected flash map
 
 | Range | Size | Contents | Confidence |
 | --- | --- | --- | --- |
 | `0x00000` - `0x167ff` | 90 KB | BLE stack (SoftDevice). Not in any OTA file | verified |
-| `0x16800` - `0x293ff` | 76.8 KB | application region. Our image occupies 66,084 of it | verified |
+| `0x16800` - `0x293ff` | 76.8 KB | application region. Stock occupies 66,084 of it, `joggles-v1` 66,172, ending at `abs 0x26a7c` | verified |
 | `0x29400` - `0x3bfff` | 76.8 KB | **OTA staging bank.** Scratch, contents disposable | verified |
 | `0x3c000` - `0x3c5ff` | 1.5 KB | saved user content (`DATS` uploads) | derived |
 | `0x3c800` | 8 B | saved-content metadata | derived |
@@ -125,6 +107,23 @@ scanning for literals missed it. *verified* two independent ways, below.
 The vendor kept Panchip's stock layout and dropped their saved-content buffer at
 `0x3c000`, immediately above the staging bank. That adjacency is the source of the
 size hazard below.
+
+**Where the two outer boundaries come from.** `abs 0x16800` is not a vendor choice; it is
+the stock SDK boundary between stack and application. *verified* from Panchip's
+`section_cfg.h`, which defines `FLASH_SOFTDEVICE_SIZE 0x00016800` and
+`FLASH_BOOTLOADER_ADDR 0x0003DC00`. So the ~90 KB below our app base is the **BLE stack**
+(Panchip call it the SoftDevice, having borrowed Nordic's vocabulary), and the bootloader
+is 8 KB at the *top* of flash rather than below the application.
+
+**There is a vendor image for the stack region, if it is ever needed.** The public SDK
+ships `src/stack/softdevice/stack_1.0.0.hex`, spanning `0x0` to `0x1677c` (92,028 bytes),
+which is exactly that region. *verified* by parsing the hex. Whether it is the same stack
+build our unit runs is *unverified*, so it is a fallback, not a drop-in.
+
+**The staging base is not a literal anywhere in the application.** It is a runtime value
+loaded from the const table at `abs 0x26930`, which is why scanning the image for literals
+found nothing and left the staging question looking open for a while. Two independent
+confirmations are under "Evidence for the staging base".
 
 **The `0x3f000` overlap was a phantom, and this dissolves it.** This document
 previously recorded a 4 KB "vendor data sector" at `0x3f000` "referenced 7 times", and
@@ -149,12 +148,9 @@ reference. The BLE stack below `abs 0x16800` and the bootloader are outside anyt
 can see, and either could still use the sector. That remains an SWD-era question, not an
 OTA one.
 
-**The general lesson, which matters more than the sector.** Animation bank data is
-15,102 bytes, **22.9% of the image**, and 129 of its words fall in the
-`0x30000`-`0x40000` flash range by chance. Any "referenced N times" claim produced by
-scanning the whole image for a value is unsound unless bank data is excluded. Claims of
-*absence* are unaffected, since noise can only make absence harder to assert, so the
-peripheral-absence scan in `firmware-internals.md` is not in doubt.
+Both scanning traps this was an instance of are canonical in the header of
+`research/tools/fwtool.ts`; use it rather than grep. Claims of *absence* survive the noise,
+so the peripheral-absence scan in `firmware-internals.md` is not in doubt.
 
 ## What the device actually does
 
@@ -334,7 +330,10 @@ Ordered cheapest and least committal first. Steps 1 to 3 cannot damage anything.
 
 The client is `packages/cli/src/flash.ts`, run as `bun run flash`. Its three
 subcommands are exactly steps 2, 3 and 4 below, and it refuses to send any image that
-has not passed `ota.check` against the stock baseline.
+has not passed `ota.check` against the stock baseline. **Step 4 is struck and `commit` is
+barred in the client itself**: without a `--ldrom-verified` flag it prints the 2026-08-08
+brick and exits 2 before it touches Bluetooth, and `--yes` on its own no longer gets past
+it. Steps 1 to 3 are all anyone should be running today.
 
 1. **Enumerate.** Confirm the device exposes `fd00` alongside `fff0` in one discovery
    pass. Zero risk. `bun run flash info` fails with a clear message if `fd01`/`fd02`
@@ -347,14 +346,42 @@ has not passed `ota.check` against the stock baseline.
    page is untouched. The device should come back still reporting `TR1906R04-10`. This
    is the discriminating test for the whole staged-versus-in-place question on real
    hardware.
-4. **Re-flash the stock image.** `bun run flash commit firmware/TR1906R04-10_OTA.bin
-   --yes`. `firmware/TR1906R04-10_OTA.bin` matches our unit
-   (version string `TR1906R04-10` at `abs 0x1e008`, `appVer 3`). Do **not** use
-   `TR1906R04-1-10_OTA.bin`; that is the other hardware variant, string
-   `TR1906R04-01-10`, `appVer 1`. Flashing stock over stock exercises the entire path
-   with zero novel-code risk and establishes the recovery loop before it is needed.
-5. **Only then patch.** Modify bytes in the decoded plaintext, keep the length
-   identical, re-encode with `research/ota-codec.ts`, flash.
+4. ~~**Re-flash the stock image.** `bun run flash commit` on the stock container, with
+   `--yes`.~~ **Struck: this step bricked a unit.** The command it used to spell out here
+   is the one that killed `GLASSES-12C3EF` on 2026-08-08, quoted verbatim under
+   "Incident: the commit that did not come back" above and in
+   `research/brick-2026-08-08.md`. Staging completed, the device's own hardware CRC over
+   the staging bank matched, it replied `80 03 00`, reset itself, and has never advertised
+   since. The reasoning written here was that stock over stock carries zero novel-code
+   risk. That is true and it was irrelevant: the image was never the risk, the handoff
+   into LDROM is.
+
+   **The command now refuses to run.** `packages/cli/src/flash.ts` checks for a
+   `--ldrom-verified` flag before it opens the Bluetooth adapter; without it, `commit`
+   prints the brick, points at `research/brick-2026-08-08.md`, and returns 2 having sent
+   nothing. `--yes` is still required as well, and on its own does nothing. **Only an
+   LDROM dump over SWD, showing a bootloader that restores `CBS`, honestly supports
+   passing that flag, and nobody has dumped it.** Do not pass it to silence the tool.
+
+   One fact from this step is still worth having, because `stage` needs it too:
+   `firmware/TR1906R04-10_OTA.bin` matches our unit (version string `TR1906R04-10` at
+   `abs 0x1e008`, `appVer 3`). Do **not** use `TR1906R04-1-10_OTA.bin`; that is the other
+   hardware variant, string `TR1906R04-01-10`, `appVer 1`, and `ota.check` refuses it as
+   `wrong-variant`.
+5. **Only then patch, and not by hand.** `bun run build-firmware` composes the image:
+   stock, plus one dispatcher hook, plus the extension. Every in-place edit goes through
+   `research/tools/patch.ts`, which declares the bytes it expects to overwrite and aborts
+   the build on a mismatch, and that is the only layer that catches an address read out of
+   a disassembly one instruction off. Then `bun run ota-check <image>` before it goes
+   anywhere near a device. *Corrected: this step used to read "modify bytes in the decoded
+   plaintext, keep the length identical, re-encode with `research/ota-codec.ts`, flash".
+   The identical-length rule was true only before the extension existed. `joggles-v1`
+   appends 88 bytes and is 66,172 against stock's 66,084, so lengths are deliberately not
+   identical.* Length preservation still holds for **edits**, which is what keeps `expect`
+   meaningful and stops any existing address moving; new code is **appended** past the end
+   of stock instead. The binding ceiling is **76,800 bytes** and `patch.ts` refuses to emit
+   past it. Flashing the result is blocked on the same bar as step 4, so today this step
+   ends at `stage`.
 
 Note that the vendor app is not a recovery route: it offers an OTA only when the
 version major is under 10, and ours reports 10. Our own client has no such gate, and
@@ -431,15 +458,19 @@ is checked against real vendor data rather than only synthetic images.
 
 - **Do not relink.** Build a new image from scratch and you own the BLE bring-up, the
   OTA service and the interrupt vectors. Get any of it wrong and there is no way back
-  over the air. Patch the stock image in place instead: same length, same entry point.
+  over the air. Patch the stock image in place instead: same entry point, no existing byte
+  moved, new code appended past the end. *Corrected: this said "same length", which the
+  extension build falsifies. Edits are length-preserving; the image as a whole is not.*
 - **Do not send `type 2`.** It aims the bootloader at the BLE stack.
-- **Do not exceed 76,800 bytes**, and prefer staying at 66,084.
+- **Do not exceed 76,800 bytes.** *Corrected: this also said "prefer staying at 66,084",
+  which is impossible for any build carrying the extension, since 66,084 is exactly the
+  stock length. It applies to pure behaviour patches only; `joggles-v1` is 66,172.*
 - **Do not remove or break the `fd00` service, the advertising, or the connection
   handling.** Those are the recovery path. Treat them as untouchable.
-- **Do not power the device from a flat battery during step 4 or later.** The
-  transfer itself is safe to interrupt. The window with no protection is the
-  `CONFIG0` erase-and-program immediately after ctrl `03`, then the bootloader's copy
-  on the reboot it triggers. See "The handoff".
+- **Do not power the device from a flat battery during a commit.** The transfer itself is
+  safe to interrupt. The window with no protection is the `CONFIG0` erase-and-program
+  immediately after ctrl `03`, then the bootloader's copy on the reboot it triggers. See
+  "The handoff".
 
 ## Still unverified
 
@@ -458,16 +489,29 @@ is checked against real vendor data rather than only synthetic images.
 
 ## Reproducing the disassembly
 
-macOS ships `llvm-objdump` but not `objcopy`, and llvm-objdump will not read a raw
-binary, so the image needs wrapping in a minimal ELF first. The wrapper is
-`research/tools/mkelf.ts`. *Corrected: this used to say both helpers lived in the
-scratchpad as one-offs. `mkelf.ts` is in the repo, and reaching for objdump has since
-become routine enough that it should be.*
+macOS Command Line Tools ship `llvm-objdump`, which is enough; there is no
+`arm-none-eabi` and no `objcopy`. llvm-objdump will not read a raw binary, so the image
+needs wrapping in a minimal ELF first. The wrapper is `research/tools/mkelf.ts`.
+*Corrected: this used to say both helpers lived in the scratchpad as one-offs. `mkelf.ts`
+is in the repo, and reaching for objdump has since become routine enough that it should
+be.*
 
-    bun research/ota-codec.ts decode firmware/TR1906R04-10_OTA.bin fw10.bin
-    bun research/tools/mkelf.ts fw10.bin fw10.elf 0x16800
-    /Library/Developer/CommandLineTools/usr/bin/llvm-objdump \
-        -d --triple=thumbv6m-none-eabi fw10.elf > fw10.asm
+    bun research/ota-codec.ts decode firmware/TR1906R04-10_OTA.bin /tmp/fw10.bin
+    bun research/tools/mkelf.ts /tmp/fw10.bin /tmp/fw10.elf 0x16800
+    OD=$(xcrun --find llvm-objdump)
+    $OD -d --triple=thumbv6m-none-eabi --start-address=0x18240 \
+        --stop-address=0x182d0 /tmp/fw10.elf
+
+`xcrun --find` beats a hardcoded path under `/Library/Developer`, and the address window
+beats dumping the whole image to a file and searching it: pass the `abs` addresses
+straight through, because `mkelf.ts` sets the load address to `0x16800`.
+
+**Do the same on the built image, not only on stock. Reading back what we intend to flash
+is the check that closes the loop**; everything else only verifies the inputs. Decode
+`firmware/joggles-v1.bin` the same way, since it is a container too:
+
+    bun research/ota-codec.ts decode firmware/joggles-v1.bin /tmp/v1.bin
+    bun research/tools/mkelf.ts /tmp/v1.bin /tmp/v1.elf 0x16800
 
 Landmarks, all at `abs` addresses:
 

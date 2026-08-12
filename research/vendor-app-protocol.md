@@ -5,7 +5,8 @@ here is what the app **actually emits**, kept distinct from what its library mer
 defines.
 **Scope:** the persist-to-device path, device-side wide-buffer scrolling, the
 complete opcode inventory, and every hard limit.
-**Related:** `notes/protocol.md` (key, frame format, geometry),
+**Related:** `notes/protocol.md` (the key, the geometry, the command table and how each
+was established), the `packages/core/src` docblocks (the wire formats themselves),
 `research/firmware-image-format.md` (firmware and OTA).
 
 ## Key facts
@@ -17,7 +18,8 @@ complete opcode inventory, and every hard limit.
 | Saved content slots | one buffer per type, no slot index in the protocol | verified |
 | Content types | `1` = text, `2` = DIY image | verified |
 | Which type persists | **type 1 only**; type 2 stops in RAM, shown by mode 26 | verified |
-| Usable ceiling | type 1 **740 columns** (1480 B), the firmware's own bound being 743; type 2 accepts 383 and **shows 24** | 740, 383 and 24 verified; 743 derived |
+| Usable ceiling, type 1 | **740 columns** (1480 B), the firmware's own bound being 743 | 740 verified on the wire; 743 derived |
+| Usable ceiling, type 2 | accepts **383 columns**, shows only the first **24** | 383 verified on the wire; **the 24 is derived**, a null observation by eye: see "Confidence" below and `content.MAX_IMAGE_COLUMNS` |
 | Displaying type 2 | automatic on `DATCPOK`; any later `MODE` discards it, permanently | verified |
 | Upload length field | 16-bit, so up to 65535 bytes announced | verified |
 | Device-side wide scroll | real: the app uploads ~200 columns and scrolls them unattended | verified |
@@ -36,30 +38,21 @@ stale default constant in the base library's `AppConfig.java`.
 The firmware declares both: `0xfff0` at body `0xc2ec` and `0xfee9` at body `0xc2f8`,
 twelve bytes apart in the same table. Our own `packages/core/src/protocol.ts`
 already uses `0xfff0` and connects successfully, so `0xfff0` is the one to build
-discovery around. The GATT table in `notes/protocol.md` lists `0xfee9` and is the
-stale entry.
+discovery around.
 
 ## The DATS/DATCP upload handshake
 
-This is the real "save to device" mechanism.
+The real "save to device" mechanism. The five steps, the frames and both payload
+encodings are in `packages/core/src/dats.ts`'s docblock; here is what that docblock
+cannot say.
 
-| Step | Direction | Frame and channel |
-| --- | --- | --- |
-| 1 | app to device | `DATS <type> <len_hi> <len_lo>`, frame `07 44 41 54 53 tt hh ll`, on `...9600` |
-| 2 | device to app | notify `DATSOK` on `...9601` |
-| 3 | app to device | stream `len` bytes on `...960a` as count-prefixed 16-byte blocks: `[count][up to 15 data bytes]` |
-| 4 | app to device | `DATCP`, frame `05 44 41 54 43 50`, on `...9600` |
-| 5 | device to app | notify `DATCPOK` on success, or `ERROR` on failure |
-
-`type` is `1` for the text buffer and `2` for a DIY image; those are the only values
-the app uses. Inter-block pacing is 50 ms for text and 60 ms for images.
+**Vendor pacing between blocks is 50 ms for text and 60 ms for images**, and the app
+announces only `type` `1` (text) or `2` (DIY image). What that pacing is worth is
+measured in "Measured upload limits and timing".
 
 All three reply strings are present verbatim in the firmware image at body `0x1dbc`
 (`DATSOK`, `DATCPOK`, `ERROR00`), which independently confirms the handshake is
 firmware-side rather than an app-only abstraction.
-
-`DATCPOK` is the device confirming it has stored and verified the buffer. There is
-no slot argument: one saved buffer per type.
 
 Type 1 content lands in a `0x600`-byte buffer at `abs 0x3c000`, with an 8-byte metadata
 record at `abs 0x3c800`, erased at 512-byte granularity, having been staged in an
@@ -87,13 +80,6 @@ type 1 starts that counter at 48 and adds 2 per column, and it resets to 0 at 15
 1490 bytes can never match. Mechanism and addresses: "`DATCP` is an exact-match gate" in
 `research/firmware-internals.md`. *Corrected: the paragraph here used to call the choice
 between ~1485 bytes and 100 blocks unresolved.*
-
-**Type 2 does not share this budget.** Its ceiling is **383 columns / 1149 bytes**,
-because the device buffers an image column as a 32-bit word and wraps the column counter
-at 384. Dividing 1480 by three bytes per column gives 493, which the device answers with
-`ERROR` after taking the whole upload. *verified* 2026-08-09 on `GLASSES-125B37`: 24 and
-383 columns both answer `DATCPOK`, 384 answers `ERROR`. Reproduce with
-`bun run packages/cli/src/type2.ts ceiling --yes`.
 
 **Length is validated.** The rejection is a clean `ERROR`, not silent acceptance.
 *Corrected: `notes/what-to-build.md` says "`DATS` validates nothing today" and that an
@@ -129,9 +115,30 @@ by eye, which is why `uploadbench.ts` uploads stripes every third column: droppe
 shifted blocks show as uneven spacing, where a fill would hide them. **The 6 ms figure
 is verified as "acknowledged", not yet as "correct".**
 
-### The live channel has no measured pacing floor at all
+### The live channel's pacing floor: 6 ms holds (verify item 7, answered 2026-08-12)
 
-*unverified*, and easy to misread the table above as covering it. Everything measured
+***verified*, and it is three times lower than what the code uses.** `bun run
+packages/cli/src/verify.ts pacing 6` lit alternate columns on `GLASSES-125B37` with 6 ms
+between writes. Jacob, by eye: **12 lines, every gap the same**. Twelve of twelve is the
+full set, so **nothing was dropped at 6 ms**, and the end state was read rather than the
+sweep, which is what the method below asks for.
+
+**Say it as a bound, not a constant.** What is proven is that the floor is *at least as
+low as* 6 ms on this link, in this room, on one connection. BLE negotiates its interval
+per connection and a crowded radio environment can be slower, so code should take most
+of the win and keep headroom rather than sitting on the measured edge. It was not
+bisected further: 6 ms was chosen as the first probe because it is the frame time the
+firmware implies, and it passed, so nothing below it has been tried.
+
+**What it is worth.** A whole-panel live change is 24 writes: **430 ms at 18 ms, 144 ms
+at 6 ms**. On the bulk path the same headroom is what separates a ~6 s full-width upload
+from a ~2 s one, which is the wait behind Jacob's *"it seems to keep having to send the
+animation to the device"* (`notes/what-to-build.md`, 2026-08-12 second batch).
+
+The paragraphs below are the state before that run, kept because the method is the part
+worth reusing and because the 18 ms number is still in the code.
+
+*unverified* as written, and easy to misread the table above as covering it. Everything measured
 here is inter-block pacing on `...960a` inside one `DATS` upload. Nobody has bisected
 `...960b`, where a drawing canvas writes one column at a time, and the two are not the
 same path: a bulk block lands in a staging buffer, while a live column write pushes a
@@ -149,22 +156,6 @@ same trick `uploadbench.ts` uses for the bulk stream - bisecting N downward unti
 column goes stale. Read the **end state**, not the animation: 24 writes sweep visibly at
 any N, which is the hardware and not a dropped write.
 
-## Channel routing
-
-| Characteristic | Role |
-| --- | --- |
-| `...9600` | commands, including `DATS` and `DATCP` |
-| `...9601` | notify, device replies |
-| `...960a` | `DATS` bulk stream, count-prefixed blocks |
-| `...960b` | live/real-time: per-column DIY writes and rhythm frames |
-
-So the `[04][column][3 bytes]` format documented in `notes/protocol.md` is the
-**live** format on `...960b`. The `DATS` stream on `...960a` is a different
-encoding.
-
-DIY mode is not required for `DATS` uploads: the text path never enters DIY. DIY
-(`SMVEW 01`/`03`) is for the live channel only.
-
 ## Three distinct pixel encodings
 
 Worth keeping straight, because they are easy to confuse:
@@ -181,7 +172,195 @@ Worth keeping straight, because they are easy to confuse:
   the live column format with its `[04][index]` header removed**, which the vendor
   states twice: `DiyAgreement.getDiyBytes0924` and `LedView.getRealTime` pack the same
   canvas with the same ladders. The vendor allocates a fixed `byte[72]` and so only ever
-  sends 24 columns; the firmware will take 383 and display the first 24 of them
+  sends 24 columns; the firmware will take 383 (*verified* on the wire) and display the
+  first 24 of them (*derived*: a null observation by eye, see "Confidence" below)
+
+## Both scroll directions gap, and there is no seamless one (verify item 3, 2026-08-11)
+
+**Neither direction loops seamlessly.** A wide type 1 loop was scrolled both ways on
+`GLASSES-125B37`, same content and same save, changing only the direction byte of
+`MODE 02 <dir>`. Jacob, by eye, driving the app's own Effects screen.
+
+| Claim | Confidence |
+| --- | --- |
+| Both directions show dead space between repeats | ***verified***, both looks by eye |
+| Neither direction is seamless | ***verified*** by the same looks |
+| **The dead space sits at a different point in the pass per direction: one direction shows it at the *beginning* of the animation** | ***verified***, Jacob's own account of what he saw |
+| The other direction therefore shows it later in the pass, which is why it read as seamless at first | *derived*, one step from the line above |
+| Left-scrolling is the one that shows it later, and `MODE 02 00` is left-scrolling | *derived* twice over: on his "scrolling left i didnt see the cut off as quickly", and on the app's own Dir 0 label |
+| Whether the two dead spaces differ in *size* | **not established.** Neither was measured |
+| Whether it is ~24 columns or ~48 | **open**, the same question `research/loop-gap-2026-08-10.md` asks. The mechanism below predicts 24 |
+
+**The mechanism this fits, and it is the store's own layout.** `DATCP` records
+`ncols = N + 48` with the content starting at store column 24 (`abs 0x1833e`), so the record
+is `[24 blank][content N][24 blank]`. A pass that begins at the content and runs **forward**
+meets the trailing blank at the **end** of the pass; a pass that runs **backward** from the
+content meets the leading blank **immediately**, at the **beginning**. That is exactly the
+asymmetry observed, it needs no new firmware behaviour to explain, and it predicts **one**
+panel width of dead space in both directions rather than two. *derived*, but it is now
+*derived* with an observation behind it instead of against it: direction selects **which**
+bracket a pass walks, not **how many**.
+
+***Corrected twice on 2026-08-11, and the second correction is the substantive one.***
+
+1. First written as "left-scrolling saves loop seamlessly, right scrolling have a big gap",
+   *verified*, with a conclusion drawn: that direction was a variable the single-number
+   bracket model in `core/src/dats.ts` failed to account for, and that the app should
+   default to "the seamless direction".
+2. Jacob: *"Neither direction was seamless, its just scrolling left i didnt see the cut off
+   as quickly."* Rewritten to say both gap, and that the difference was perceptual.
+3. Jacob again, and this is the part the second pass **dropped**: *"both scrolling
+   directions have a dead space just one direction shows it at the beginning of the
+   animation so i saw it earlier."* The difference is **where in the pass the dead space
+   falls**, which is a fact about the device, and the second pass had recorded it as a fact
+   about the viewer's attention. Flattening an observation into "the user did not notice"
+   threw away the only mechanism on offer.
+
+**What this settles and what it does not:**
+
+- **The bracket model stands and is better supported than before.** It yields one number,
+  the observations show one number, and the direction asymmetry falls out of the layout.
+- **There is no seamless direction**, so a UI must not offer one.
+- **But there is a direction worth defaulting to**, which the second pass wrongly concluded
+  there was not: the one that puts the dead space at the **end** of a pass. It is the same
+  amount of blank either way, and it reads as a loop finishing rather than as an app that
+  failed to start. On the labels we have, that is left-scrolling, `MODE 02 00` (*derived*).
+- **The 2026-08-10 contrary observation still stands unexplained**: a solid 32-column block
+  that looped with no dark pass at all in the session that saved it. Direction does not
+  explain that away, so track 16's two looks remain the experiment that settles whether the
+  blanks are unconditional or follow a restore from flash.
+
+**What is still worth one look**, needing no flash since the content is already saved: at
+the slowest `SPEED`, is the dead space about **one** panel width or about **two**? One
+confirms the mechanism above; two means both brackets are crossed and the mechanism is
+wrong. `loop-gap-2026-08-10.md` predicts times for the same measurement.
+
+**What the app can do.** Not remove it: the blank columns are the firmware's own, so the
+only route to a truly seamless loop is the JGX sub-command that patches the wrap bound,
+blocked on SWD delivery. What it can do is **default to the direction that hides the dead
+space at the end of the pass, and stop implying seamlessness is available** - which is what
+the `effects.ts` docblock already says in its own words: what a wide loop cannot promise is
+that the panel shows no join.
+
+**On verify item 3.** The remaining half was "one look at a scrolling save, plus direction
+1", and both looks have now happened on our own uploaded content. Direction 1 scrolls and
+does not misbehave, so the item is answered as far as it asked. What it did not ask, and
+what these looks could not settle, is the size of the gap either way.
+
+## The sitting, 2026-08-12: six looks at the panel, no flash spent
+
+**The first time anyone has watched this panel since 2026-08-09**, and it graduated four
+claims this repo was already building on. Jacob at the glasses, `packages/cli/src/verify.ts`
+driving from the Mac, one subcommand per look, each printing what to look for before it
+sent anything. **No `DATCP`, so zero page erases**: every command here is `SPEED`, `MODE`,
+`SMVEW`, `CLRL` or a live column write, all of which stay in RAM.
+
+| # | Look | Answer | Was |
+| --- | --- | --- | --- |
+| 0 | power-up, nothing connected | our saved word, animated by the device itself | never observed |
+| 1 | `MODE 02 00` | travels **left**, blank between passes | one accidental sighting |
+| 2 | `MODE 02 01` | travels **right**, blank between passes | **never sent, ever** |
+| 3 | column 0 lit in DIY | **one** column, the leftmost | *derived* |
+| 4 | `CLRL` alone on a lit panel | panel goes dark and stays dark | *derived* from a hand decode |
+| 5 | live pacing 6 ms | 12 of 12 columns, no drops | 18 ms, copied never measured |
+| 6 | `ANIM 0` | assembles from the bottom left | two readings, both unprovable |
+
+### The device animates our saved content by itself, and `MODE 03` is how
+
+**On power-up, with nothing connected, `GLASSES-125B37` restored the word saved in its
+flash store and played it bouncing up and down while travelling left.** Jacob, by eye,
+*verified*. Before the power cycle the same word had been sitting **static**.
+
+His reading, and it fits without needing anything new: **`MODE 03` is the vertical bounce
+and its second byte is a direction**, so it bounces *and* travels. *derived*, from one
+observation plus the command table.
+
+**This corrects a claim `notes/app-plan.md` makes twice**: that the saved route's motion is
+"horizontal translation only". It is not. The saved store also gets a two-axis bounce for
+the same zero flash, zero radio and zero connection, and **the app offers only `MODE 02`**.
+`MODE 03` is a free motion nobody has exposed.
+
+It also explains the unexplained state in `.claude/locks/track-16`: the panel found showing
+a saved word **static** with nobody having commanded it. The device chooses a mode on its
+own, so an uncommanded display state is normal rather than evidence of a stray write.
+
+### Direction is settled, and both directions gap
+
+Dir 0 travels **left**, dir 1 travels **right**, both *verified* by eye on 2026-08-12, and
+**dir 1 had never been sent to a device in the life of this project**. That upgrades two
+rows in the table above from *derived* to *verified*: `MODE 02 00` is left-scrolling, and
+the left-scrolling default the app ships is the direction it meant to choose.
+
+Both showed the panel go **fully dark between passes**, which is the third independent
+sighting of the blank bracket and the first on content the device restored from flash with
+no save anywhere in the session.
+
+**The size still cannot be read off this, and that is the honest limit.** `review-16`
+re-decoded the wire log the same night: the payload in flash is a 24-column save whose
+**own bitmap carries a 10-column blank run**, so what was watched is the content's blanks
+plus the device's bracket. What it proves is that a **24-wide window went fully dark at
+all**, and ten blank columns cannot do that alone, so the bracket exists and does not
+depend on having just saved. Whether it is 24 or 48 is still open, and the clean subject
+for that measurement was already on the wire and unread: the 240-column loop of 2026-08-11
+23:46, whose longest blank run is zero.
+
+### One 24-wide surface, not two mirrored halves (verify item 2, answered)
+
+Lighting **column 0 only** in the live buffer lit **one** column, at the leftmost edge.
+*verified*. Two mirrored 12-wide surfaces would have lit a column on **each** lens, so the
+panel is a single 24-column surface spanning both eyes and `packages/app/src/draw/` is
+right as built. This was a UI decision, not a detail: it is the difference between one
+canvas and two.
+
+**One ambiguity survives, and it is exactly 180 degrees.** Jacob reported "left most
+column" without saying whether he was wearing the glasses or facing them, and holding them
+up swaps left and right. So *which end* column 0 sits at is *derived*, while *how many
+surfaces there are* is *verified*. One word at the next sitting closes it.
+
+Incidental, from look 4: with bars at columns 2, 11 and 20, he read the middle bar as
+slightly left of centre. That is arithmetically right (11 of 0-23, centre 11.5), so
+**column addressing runs linearly across the nose bridge with no hidden offset at the
+join** (*derived*, one look).
+
+### `CLRL` clears the panel (verify item 6, answered)
+
+**Three separated vertical bars, then `CLRL` alone with nothing following it, and the panel
+went dark and stayed dark.** *verified*, 2026-08-12.
+
+This matters more than its size suggests: `CLRL` is undocumented, the vendor app never
+sends it, and `core/src/sender.ts` marks all 24 columns known-blank the instant it goes
+out. Had it been a no-op, the sender's model of the panel would have been silently wrong
+after every clear. `clear({ atomic: false })` can stop being kept as a hedge.
+
+**Not established: whether it clears all at once or wipes across.** Jacob was asked and
+reported only that it went dark, so the word "atomic" in that path is still *derived*.
+
+### `ANIM n` is mode n + 5 after all (track 20's contradiction, resolved)
+
+`ANIM 0` played an animation that **appears from the bottom left**, continuous, with the
+restart too hard to see. The firmware decode says `anim-0` is mode 5, 31 frames, and its
+first frames assemble upward and rightward **from a three-pixel block at the bottom left**
+(`bun run research/tools/bankdump.ts show anim-0 --all`). That signature matches, so:
+
+- **`ANIM n` selects mode n + 5** is *verified* by behaviour, and `app/src/builtins.ts`
+  `commandFor()` is right, so the 30 built-in tiles in the app show what they claim.
+- **The vendor app's `ANIM 20-29` is a different convention of its own**, not evidence
+  against the firmware reading. `protocol.animation`'s docblock can stop calling it
+  disputed.
+- The 3.7 s cycle is **not** confirmed: the restart was not visible to the observer.
+
+### What the sitting did not answer
+
+**Verify items 1 and 5 are untouched**, because both need the one save this sitting
+deliberately did not spend: whether DATS bit 7 lights row 8 (the row mapping under every
+rendered pixel, still *derived* from two firmware paths), and whether `MODE 02` scrolls
+content narrower than the panel. `verify.ts rows --yes` does both in one save, five page
+erases, and its content is a single row-8 line whose breaks at the dead pixels make the
+reading self-checking.
+
+Also unread: whether the scrolled word rendered **the right way up and unmirrored**, asked
+twice during the sitting and not answered. It is free evidence for the row mapping the next
+time anyone looks, since `BASS` is asymmetric top to bottom in every letter.
 
 ## Wide buffers are real
 
@@ -212,6 +391,11 @@ than the vendor's fixed 72 bytes. It does, up to 383 columns.
 | type 2, 24 columns (72 B) | `DATCPOK` |
 | type 2, 383 columns (1149 B) | `DATCPOK` |
 | type 2, 384 columns (1152 B) | `ERROR` |
+
+Reproduce with `bun run packages/cli/src/type2.ts ceiling --yes`. The mechanism is a
+column counter that wraps at 384 because the device buffers an image column as a 32-bit
+word: `content.IMAGE_ACCEPT_CEILING` has the addresses, and the correction of an earlier
+493 read off type 1's byte budget.
 
 Two things came out of it that the question did not ask. **The image displays on
 `DATCPOK` with no `MODE` sent at all**, greyscale intact. And **`MODE` is a one-way door
@@ -269,12 +453,6 @@ does not exercise.
   locally, never uploaded, and there are no bank blobs in the APK assets. The real
   bank content is firmware-resident.
 
-### Opcodes absent from notes/protocol.md
-
-From the app's `Command.java`, defined but unused, so presumably firmware-supported:
-**`COLR`** (colour, length 8), **`LEVL`** (level, length 6), **`POWR`** (power,
-length 5).
-
 ### Dead code in this build
 
 Defined in the library with zero callers: `SMVEW 02`, `STYPE` and its reply parser,
@@ -312,9 +490,16 @@ empirical mapping remains the only route.
   different purposes.
 - **Bulk chunking:** 15 data bytes per 16-byte block, consistent with the
   one-block-per-write rule.
-- **Rhythm mode:** 16-byte frames `[15][subchannel][12 bytes]` streamed on
-  `...960b`, not persistent. Twenty mode constants exist, `MODE_RED_GRADUAL` to
-  `MODE_WHITE_FLASH`.
+- **Rhythm mode:** frames `[0d][style][12 payload bytes]`, 13 body bytes padded to a
+  16-byte block, streamed on `...960b` and not persistent. *derived*, off the
+  disassembly, and nothing has been sent to hardware. Twenty mode constants exist,
+  `MODE_RED_GRADUAL` to `MODE_WHITE_FLASH`. *Corrected: this read
+  `[15][subchannel][12 bytes]`, which is wrong and does not even add up to 16 bytes.
+  There is no subchannel and no fourth field; byte 1 is the style. The error came from
+  counting the handler's own offsets as wire offsets, and the handler is passed a
+  struct whose frame data starts one byte in, so its `[frame+2]` is wire index 1.
+  Byte-level walk: `research/rhythm-channel.md`. Encoder:
+  `packages/core/src/rhythm.ts`.*
 - No max-frames or max-animation-length constant exists, because animations are
   firmware built-ins rather than uploads.
 

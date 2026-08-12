@@ -84,7 +84,9 @@ whether anything beyond `0xa0`-`0xa5` and `0x4a` is accepted.
 
 ## The panel is one canvas across both lenses
 
-*derived*, and it contradicts `CLAUDE.md`'s "24 cols/lens".
+*derived*. *It contradicted `CLAUDE.md`'s "24 cols/lens", which was corrected on
+2026-08-09 and now reads "24 columns spanning both lenses". Kept as the record of where
+the wrong figure came from.*
 
 The firmware emits exactly one 24-column frame to one port, and the alive map in
 `notes/protocol.md` shows a nose notch in the **middle** of the 24-column grid. A
@@ -100,10 +102,14 @@ extra columns do not exist on the wire and no patch can create them.
 
 ## There is a button, and the firmware already uses it
 
-**Now hand-checked against the bytes, including the pin.** This section was previously
-marked *derived* with a warning to re-derive before patching; that warning is discharged.
-The behaviour is still worth confirming on hardware in ten seconds (press it, watch the
-mode change; hold it, watch it power off), but no patch is now blocked on doing so.
+**The two halves of this section carry different confidence, and the split is the point.**
+The **pin is *verified***, hand-checked against the bytes as P5.2 in a later session; the
+whole section was previously *derived* with a warning to re-derive before patching, and
+that warning is discharged. The **behaviour is *unverified***: nobody has pressed the
+button and watched. It is a ten-second test (press it, watch the mode change; hold it,
+watch it power off), but until someone does it, only the disassembly says what a press
+does. No patch is blocked on that test. **`CLAUDE.md` is stricter than this file** and
+still reads "*derived*, pin unconfirmed", which the P5.2 check supersedes.
 
 **Gotcha for anyone re-checking the pin.** `0x500042a8` never appears as a literal, so
 searching for it finds nothing and looks like a refutation. The debouncer loads
@@ -203,8 +209,35 @@ table and not 32-bit immediate compares, which corrects the guess recorded in
 ASCII does not appear as *data* in the image, which is what led to that guess; it
 appears as immediates inside `cmp` instructions instead.
 
-Length is gated first, at `[r4+0xfb]`, which must be 4 to 20. The opcode byte is read by
-`ldrb r2, [r4, #0x2]` at `abs 0x18280`.
+**The length gate, read out of the image rather than reasoned about.** It runs first,
+before any opcode compare, and it bounds the payload at **both ends, 4 to 20 inclusive**.
+At `abs 0x18268`, with `r4` just copied from `r0` at `0x18266`:
+
+    18268  adds r0, #0xe0
+    1826a  ldrb r0, [r0, #0x1b]      ; 0xe0 + 0x1b = [r4 + 0xfb], the length byte
+    1826c  cmp  r0, #0x14
+    1826e  bhi  0x182c2              ; too long: straight to the shared epilogue
+    1827c  cmp  r0, #4
+    1827e  blo  0x182c2              ; too short: same exit
+    18280  ldrb r2, [r4, #0x2]       ; only now is the opcode read
+
+The bytes are *verified*, decoded by hand from the stock image at this address. The
+**behaviour is *derived***: both rejects branch to the shared epilogue at `abs 0x182c2`, so
+an out-of-range frame should be dropped in silence with no reply and no notify, but nothing
+has been sent to a device to watch it refuse one.
+
+**Consequence for our own opcode: `jgx.hello()` is 4 bytes and sits exactly on the lower
+bound.** The frame is `04 4a 00 01 00`, i.e. `J`, sub-command `HELLO`, then the app version
+as a halfword, padded to 16 for the AES block. One byte shorter and the gate rejects it
+before the `J` compare at `abs 0x182a6` is ever reached, which would read on the wire as a
+silent unit rather than as a bad frame. Any future sub-command carrying less than 3 bytes
+after the opcode must be padded, not trimmed.
+
+Between the two compares sits a count-up loop at `abs 0x18270`-`0x1827a` (`movs r1, #0`,
+then `adds`/`uxth`/`cmp`/`bhi`) which leaves `r1` equal to the length and is immediately
+discarded, because `abs 0x18284` reloads `r1` from the literal pool. It computes nothing.
+Recorded only so that the next person disassembling the gate does not go hunting for its
+purpose.
 
 **`[r4+2]` and "wire index 1" are the same byte.** `r4` is a struct pointer whose frame
 data starts one byte in, so every wire index `n` is `[r4 + n + 1]`. Two independent
@@ -262,13 +295,25 @@ wins, so the second test at `abs 0x182a2` can never fire. Repointing it is a **o
 edit: change the immediate at `abs 0x182a2` to a new opcode letter.
 
 **But the island cannot reach free flash.** A 2-byte Thumb branch spans about +/-2 KB,
-and free flash starts at `abs 0x26a24`, roughly 60 KB away. So a new opcode needs an
-intermediate hop, which the design note does not account for.
+and free flash starts at `abs 0x26a24`, **59,262 bytes** away
+(`0x26a24 - 0x182a6`). So a new opcode needs an intermediate hop, which the design note
+does not account for. *The exact figure is quoted rather than rounded on purpose: "roughly
+60 KB" stood here, another document rounded it differently, and a third value was one
+paraphrase away.*
 
-The clean way out is to **repurpose the `LOOP` handler**, `abs 0x182a6`-`0x182c0`, which
-is 26 contiguous bytes ending in `pop` and is ample for `ldr r0, [pc, #n]; bx r0` plus a
-4-byte literal. `LOOP` only calls `set_mode(24)` (`movs r0, #0x18` at `abs 0x182bc`), and
-mode 24 stays reachable as `ANIM 19`, so nothing is lost.
+The clean way out is to **repurpose the `LOOP` handler**, `abs 0x182a6`-`0x182c1`, which
+is **28** contiguous bytes running up to the shared epilogue and is ample for
+`ldr r0, [pc, #n]; bx r0` plus a 4-byte literal. `LOOP` only calls `set_mode(24)`
+(`movs r0, #0x18` at `abs 0x182bc`), and mode 24 stays reachable as `ANIM 19`, so nothing
+is lost.
+
+The length is *verified* against the v1 diff run, `abs 0x182a6` to `0x182c1` inclusive.
+*Corrected: this paragraph said 26 bytes ending at `abs 0x182c0`, "ending in `pop`". Both
+the length and the end address were wrong, and this same file gave 28 in two other places.
+The `f8 bd` `pop` epilogue sits at `0x182c2`, one halfword past the block, and is branched
+to rather than contained. Worth more than the two bytes suggest: this is the block whose
+entry points two of our own documents got wrong, and `CLAUDE.md` carries a standing warning
+about scanning for branches into it before overwriting it.*
 
 Incidentally this settles the firmware half of `LOOP` versus `LOOA`: the firmware matches
 L-O-O-P, testing `0x4c`, `0x4f`, `0x4f`, `0x50` at `abs 0x182a6`-`0x182b8`. *verified.*
@@ -390,15 +435,30 @@ is *unverified*.
 *verified*, and it is the most useful thing in the firmware that our client does not
 use. Handler at `abs 0x21b04`, reached from the `...960b` path.
 
-A single 16-byte frame sets **all 24 columns at once**:
+A single 16-byte frame sets **all 24 columns at once**. On the wire it has **three
+fields**, 13 body bytes padded to 16:
 
-    [len][?][style][12 payload bytes]
+    [0d][style][12 payload bytes]
 
-- `[frame+2]` selects one of 4 bar styles.
-- `[frame+3..14]` carry **two 4-bit bar heights per byte**, low nibble first, so 12
-  bytes give 24 columns. Loop bound is `cmp r3, #0xc` at `abs 0x21b6a`.
-- Each height is clamped to `< 10` and used to index a table of ready-made column
-  words, which are written straight into the live column buffer at `0x200036ac`.
+- Wire index 0 is the length byte, 13. Nothing reads it for its value; the gates are
+  ranges, 4 to 20 at the dispatcher and 6 to 20 on the `...960b` path.
+- Wire index 1 is the style, one of 4, read by the handler as `[r0+2]` at `abs 0x21b06`.
+- Wire indices 2 to 13 carry **two 4-bit bar heights per byte**, low nibble first, so 12
+  bytes give 24 columns. The handler reads them at `[r0+3..14]`; loop bound is
+  `cmp r3, #0xc` at `abs 0x21b6a`.
+- Each height indexes a table of ready-made column words, written straight into the live
+  column buffer at `0x200036ac`. **An out-of-range height blanks its column** rather than
+  saturating: see below.
+
+*Corrected: this recorded the frame as `[len][?][style][12 payload bytes]`, four fields
+with an unknown byte at wire index 1, and the Unverified list carried "the framing at
+offsets 0 and 1" as an open question. **There is no unknown byte and no subchannel.** The
+error was reading the handler's own offsets as wire offsets: the GATT write callback at
+`abs 0x201c0` copies `OUT[k+1] = IN[k]`, so `[r0+n]` is wire index `n - 1`, exactly the
+`[r4 + n + 1]` shift this file already establishes for the command dispatcher and then
+failed to apply here. Folded in from `research/rhythm-channel.md`, which derives it byte by
+byte; the encoder is `packages/core/src/rhythm.ts`, and `protocol.frame('', style,
+...payload)` builds it with the same builder as every other command.*
 
 The two tables, *verified* by reading the bytes:
 
@@ -408,6 +468,16 @@ The two tables, *verified* by reading the bytes:
 | `abs 0x22dd0` | `0, 3, f, 3f, bf, 2bf, abf, 1abf, 5abf, 15abf` | tapered: rows 0-2 level 3, 3-5 level 2, 6-8 level 1 |
 
 Style 0 uses the solid table, styles 1 to 3 the tapered one.
+
+**A height of 10 or more blanks its column, and it does not saturate at 9.** Every arm
+does `cmp #0xa; blo; movs #0`, so the out-of-range case substitutes **0** and that column
+goes dark. *Corrected: this said each height "is clamped to `< 10`", which reads as
+saturation and is not what the code does. The behaviour matters more than the wording,
+because overshoot on the loudest beat is the natural bug in any audio meter and the panel's
+answer to it is to go dark exactly then, i.e. the failure looks like a dead channel at the
+one moment anybody is watching. `rhythm.encode` clamps on the host so the firmware's rule
+never fires. Folded in from `research/rhythm-channel.md`; the encoder is
+`packages/core/src/rhythm.ts`.*
 
 **Why this matters more than anything else here.** Every other path updates one column
 per BLE write, which is why full-frame streaming visibly sweeps. This path updates the
@@ -544,8 +614,53 @@ mode 23 is a greyscale box animation that does use the intermediate levels.
 **Total built-in content: 15,102 bytes**, from `abs 0x22df8` to the end of mode 25's
 bank. All of it is pure data, read by the animation engine and never executed, so
 replacing it in place is the lowest-risk edit class available: it cannot affect BLE
-bring-up, and a length-preserving swap shifts no addresses. Combined with the 10,716
-free bytes above the image, that is **25,818 bytes** available without relinking.
+bring-up, and a length-preserving swap shifts no addresses. Combined with the free flash
+above the image (10,628 bytes once `joggles-v1`'s extension is in place), that is
+**25,730 bytes** available without relinking.
+
+### `IMAG n` is mode 25 showing frame n of that one bank
+
+*verified* by hand decode of both halves, 2026-08-11. It fills in the `-` the table above
+leaves against mode 25: that row is not an unreachable oddment and not an `ANIM` index, it
+is the **image bank**, and the eleven built-in images the app is recorded as sending are
+its eleven frames.
+
+| Site | Bytes | What |
+| --- | --- | --- |
+| `abs 0x1859c` | `11 49` | `ldr r1, [pc, #0x44]`, pool `0x185e4`, RAM `0x2000374e` |
+| `abs 0x1859e` | `a0 79` | `ldrb r0, [r4, #6]`, the argument |
+| `abs 0x185a0` | `08 70` | `strb r0, [r1]`, the index into that RAM byte |
+| `abs 0x185a2` | `19 20` | `movs r0, #0x19`, then the `bl set_mode` at `0x185a4` |
+| `abs 0x21832` | `0b 29` | `cmp r1, #0xb`, mode 25's tick refusing an index above 10 |
+| `abs 0x2183a` | `48 21` | `movs r1, #0x48`, the 72-byte stride |
+| `abs 0x2183c` | `48 43` | `muls r0, r1` |
+| `abs 0x2183e` | `07 49` | `ldr r1, [pc, #0x1c]`, pool `0x2185c`, bank `0x265de` |
+
+So the arithmetic is `0x265de + 72 * index`, and the count is **read out of the image**
+rather than assumed: `IMAG 11` fails that compare and shows nothing rather than reading
+past the bank. Eleven is also what `vendor-app-protocol.md` records as verified from the
+app source, which never saw these bytes, so two independent sources agree.
+
+**`ANIM n` selects mode n + 5.** `abs 0x18506`-`0x1850c` is `ldrb r0, [r4, #6]`,
+`adds r0, r0, #5`, `uxtb r0, r0`, then a branch into that same `bl set_mode`. The bytes are
+*verified*; the wrap the `uxtb` allows, which would make `ANIM 251` to `ANIM 255` the only
+route to modes 0 to 4 that is not the button, is *derived* and untried.
+
+**That leaves one contradiction, and it is the thing to settle before any app ships a tap.**
+The vendor app sends `ANIM 20` to `ANIM 29` for its ten animations
+(`Agreement.getAnimCommand(i + 20)` in `AnimFragment`, over ten list entries), and under
+`n + 5` those are modes 25 to 34: the image mode, the type 2 display mode, six oddments,
+and two values `set_mode` rejects outright at its `cmp #0x21`. So either the vendor's
+animation menu has never addressed the 19 banks above, or the `+ 5` is wrong. No amount of
+further disassembly can say which, because both halves of the disagreement are already
+disassembly, and `packages/core/src/protocol.ts`'s `animation()` currently documents the
+vendor's offset as though it were the firmware's rule.
+
+`research/tools/bankdump.ts` renders every bank offline, which reduces that to one sitting:
+send `ANIM 0` and compare the panel against `bun research/tools/bankdump.ts show anim-0`.
+The same run re-resolved this section's map independently and prints its disagreements: the
+19 animation banks and the image bank all agree with the rows above, and they are exactly
+contiguous from `0x22f06` to `0x268f6`, 14,832 bytes.
 
 ### The firmware's own animations use greyscale, so 1-bit compression is lossy
 
@@ -602,6 +717,11 @@ under half a minute, whereas 25 fps gets 1 to 2 minutes and looks fine for most 
 
 Recorded rather than deleted, per `notes/WRITING.md`.
 
+**Every row below that cites the root `CLAUDE.md` was applied there on 2026-08-09.**
+`CLAUDE.md` now reads correctly on all of them, and the rows are kept as the record of
+what was wrong and for how long, not as a live defect list. Rows citing other files are
+live unless they say otherwise.
+
 | Claim, and where | Correction |
 | --- | --- |
 | "palette at `abs 0x22da8`" (`firmware-image-format.md`) | bar-height table for rhythm mode, not a palette |
@@ -610,7 +730,7 @@ Recorded rather than deleted, per `notes/WRITING.md`.
 | "the dispatcher compares opcodes as immediates" (same) | it compares them byte by byte |
 | `MODE` 2nd byte may be a slot index (`protocol.md`) | boolean, gives 2 displays not 8 |
 | `LEDFIRST`/`LEDSECOND`, `COLR`, `LEVL`, `POWR`, `STYPE` unverified (`CLAUDE.md`) | absent from the firmware, not merely untested |
-| "use `LEDOFF` for a genuinely dark panel" (`CLAUDE.md`) | `LEDOFF` is not implemented. Use `CLRL` |
+| `LEDON`/`LEDOFF` tabled as "panel on/off", and `LEDOFF` advised for a genuinely dark panel (`notes/protocol.md`) | neither reaches a handler. Use `CLRL`. *Re-aimed: this row cited `CLAUDE.md`, which was corrected on 2026-08-09. The live wrong copy is `notes/protocol.md`* |
 | "9 rows x 24 cols/lens" (`CLAUDE.md`) | *derived*: 24 columns total across both lenses |
 | "`LOOA`" (`protocol.md`) | firmware matches `LOOP`. Which is wrong is *unverified* |
 | DATS rows 7-8 may not reach the panel (`CLAUDE.md`) | they do, via bits 7 and 15. See below |
@@ -747,12 +867,19 @@ nothing switches back.** So a type 2 image is displayable exactly once, at uploa
 any `MODE` after it discards it. Anything driving both types has to send them in that
 order or not at all.
 
-### Only the first 24 columns of a type 2 image are ever visible
+### Only the first 24 columns of a type 2 image are visible: disassembly firm, eye null
 
-*verified*, but **the weakest result in this section, and the one most worth re-running
-before anything expensive rests on it.** The disassembly and the panel agree, which is
-why it is believed; the panel half is one person reporting that nothing changed for two
-minutes, and a null observation by eye cannot distinguish "it never scrolled" from "the
+**The two halves of this are not the same strength, which is why the heading says so
+rather than the body.** The disassembly is *verified*. The panel half is a single **null**
+observation by eye, so the claim as a whole is **the weakest result in this section and the
+one most worth re-running before anything expensive rests on it** - and
+`content.MAX_IMAGE_COLUMNS` is sized on it. *Corrected: the heading read "are ever
+visible" under a bare verified marker, and only the body admitted the weakness, so a reader
+skimming headings took the whole claim as checked against hardware.*
+
+The disassembly and the panel agree, which is why it is believed; the panel half is one
+person reporting that nothing changed for two minutes, and a null observation by eye
+cannot distinguish "it never scrolled" from "the
 scroll was slower than the watch, or paused between passes the way type 1 does, or the
 observer looked away". A first pass of the same test with a *dim* rather than black tail
 came back "not certain, but it feels like it is bright all the time", which is what
@@ -815,7 +942,9 @@ does the remainder of any 3-bytes-per-column payload. The handler accepts blocks
 The **only** outbound notification path in this firmware is `abs 0x2145c`. It has
 exactly **three callers**, all inside the `DATS`/`DATCP` arm of the dispatcher
 (`abs 0x1832e` for `DATSOK`, `0x1839a` and `0x183a4` for `DATCPOK`/`ERROR`), and it
-never appears anywhere as a function pointer, so there is no indirect call either.
+never appears anywhere as a function pointer, so there is no indirect call either. All
+three pass `r0 = 7`, so stock's longest reply is 7 bytes against the 15-byte payload
+ceiling, which is the headroom a `J` sub-command reply has to play with (*verified*).
 
 So the firmware can say exactly three things to a host, and none of them is about the
 button. **The button state is never transmitted.** Any design where the phone reacts to
@@ -949,20 +1078,24 @@ the BLE stack or simply unused is *unverified*, and nothing should be built ther
 
 ## What patching would buy, ranked
 
-Free flash for appended code: **10,716 bytes**, `abs 0x26a24` (image end, last
-non-zero byte at `0x269e9`) up to the staging bank at `0x29400`. *verified.*
+Free flash for appended code: **10,716 bytes on stock**, `abs 0x26a24` (image end, last
+non-zero byte at `0x269e9`) up to the staging bank at `0x29400`. `joggles-v1` spends 88 of
+them on its `JGX1` extension at the bottom of that gap, so a crew unit has **10,628 bytes**
+left. *verified.* Everything below is costed against the gap, not against either total.
 
 **The byte costs below are estimates, not measurements.** They are useful for ordering the
-work and nothing else; do not plan a flash layout around them.
+work and nothing else; do not plan a flash layout around them. **Three rows are no longer
+prospective**: they are in `firmware/joggles-v1.bin`, marked **done in v1**, and their
+costs there are real.
 
 | Patch | Cost | Value |
 | --- | --- | --- |
 | Animation tick 50 Hz to 100 Hz | **1 byte** at `abs 0x18052` (`0x32` to `0x64`) | doubles smoothness of every device-side animation and the `SPEED` range |
-| AES key swap | 16 bytes at `abs 0x22b94` | locks out the vendor app. Single reference site, clean in-place edit |
-| Rename `GLASSES-` | **exactly** 8 bytes at `abs 0x2691c` | crew units are told from stock at scan time. Shorter is not free, see below |
+| AES key swap | 16 bytes at `abs 0x22b94` | **done in v1**, the crew key from `firmware/crew-key.json`. Locks out the vendor app, which is the defensive point: nobody with the stock app can drive a unit a crew member is wearing. Single reference site, clean in-place edit |
+| Rename `GLASSES-` | **exactly** 8 bytes at `abs 0x2691c` | **done in v1**. Crew units are told from stock at scan time. Shorter is not free, see below |
 | Widen the brightness clamp | ~6 bytes at `abs 0x184ba` | probes whether the module accepts beyond `0xa5`. *unverified* payoff |
 | Dim uploaded text | 1 byte at `abs 0x22da5` | level 3 to level 1 or 2 |
-| A new opcode | ~6 bytes plus a handler | a dead redundant `cmp r2, #'S'` at `abs 0x182a2` can never fire and can be repointed at a trampoline in free flash |
+| A new opcode | 28 bytes at `abs 0x182a6` plus a handler | **done in v1** as opcode `J`. Overwrites the whole `LOOP` block and reaches free flash through a literal. The dead-compare route this row used to propose cannot work, see below |
 | Button drives our content | ~50-100 bytes | the only route to phone-free interaction. Hook the existing latch at `0x2000306e` |
 | Notify on button press | ~10-20 bytes | makes the button an input to our app. `0x2145c` already does the sending |
 | Seed `rand()` | ~10 bytes | without it, "random" is byte-identical on every boot |
@@ -970,7 +1103,22 @@ work and nothing else; do not plan a flash layout around them.
 | Multi-column live writes | ~25 bytes, blocked | see below |
 | Content in the staging bank | 60-100 bytes | 1.5 KB to 76.8 KB of saved content |
 
-### The advert name is 14 fixed bytes, so a rename must be exactly 8
+### Correction: a new opcode cannot be bought with the dead compare
+
+**This corrects the "new opcode" row above**, which read "~6 bytes plus a handler: a dead
+redundant `cmp r2, #'S'` at `abs 0x182a2` can never fire and can be repointed at a
+trampoline in free flash". The compare really is dead and really is a free slot, but
+**repointing it cannot reach a trampoline in free flash**, and this file's own analysis
+says so: the compare feeds a 2-byte branch island, an island's branch spans about +/-2 KB,
+and free flash starts 59,262 bytes away. A one-byte immediate change has nowhere to land.
+See "The dispatcher's branch islands".
+
+What `joggles-v1` actually ships is the hop the idea was missing: **the 28-byte `LOOP`
+block at `abs 0x182a6`-`0x182c1` is overwritten wholesale** with `cmp r2, #'J'`, a
+`ldr`/`blx` through a literal, and a branch to the shared epilogue. One contiguous
+length-preserving edit, no island, no dead-compare repoint. The idea is kept here rather
+than deleted because the free slot at `0x182a2` remains genuinely free for a *second*
+opcode, on the same condition: it needs a hop, not a direct branch.
 
 *verified* by disassembly 2026-08-09. **This corrects the rename row above**, which read
 "8 bytes of zero padding follow, so a same-or-shorter name is free" until this session.
@@ -1079,9 +1227,12 @@ answer `DATCPOK`.*
 - Whether the display module accepts any command beyond `0xa0`-`0xa5` and `0x4a`.
 - `LOOP` versus `LOOA`.
 - Whether the speculative-decrypt trick works for multi-column writes.
-- The exact rhythm frame framing at offsets 0 and 1. The style byte at `[frame+2]` and
-  the 12 payload bytes at `[frame+3..14]` are *verified*; `vendor-app-protocol.md`
-  records the frame as `[15][subchannel][12 bytes]`, which does not quite add up.
+- ~~The exact rhythm frame framing at offsets 0 and 1.~~ **Settled, and the question was
+  malformed.** There is no byte at wire index 1 other than the style: the frame is
+  `[0d][style][12 payload bytes]`, and both this file's old `[len][?][style][12]` and
+  `vendor-app-protocol.md`'s `[15][subchannel][12 bytes]` came from reading handler
+  offsets as wire offsets. See "The rhythm channel is a full-panel atomic write" above and
+  `research/rhythm-channel.md`. Still *derived*: nothing has been sent to hardware.
 - How the unit wakes from its powered-off deep sleep. No GPIO or power-down wake interrupt
   is enabled in the application, so it presumably comes from the BLE stack's own sleep
   timer, below `abs 0x16800` and out of reach.
@@ -1097,10 +1248,12 @@ answer `DATCPOK`.*
 
 ## Reproducing
 
-    bun research/ota-codec.ts decode firmware/TR1906R04-10_OTA.bin fw10.bin
-    bun mkelf.ts fw10.bin fw10.elf 0x16800     # 40-line ELF32 wrapper, scratchpad
-    /Library/Developer/CommandLineTools/usr/bin/llvm-objdump \
-        -d --triple=thumbv6m-none-eabi fw10.elf > fw10.asm
+**The decode-and-objdump recipe lives in `research/firmware-flashing.md`,
+"Reproducing the disassembly".** Follow it there rather than here. *Corrected: this section
+carried a third copy of those three commands and described `mkelf.ts` as a scratchpad
+one-off. It is a repo tool, `research/tools/mkelf.ts`, which `firmware-flashing.md` had
+already corrected; a stale duplicate sends the next reader looking in the scratchpad for a
+file that is checked in.*
 
 Peripheral bases were confirmed against Panchip's own `PN102Series.h` rather than
 guessed. From the SDK mirrors listed in `firmware-flashing.md`:

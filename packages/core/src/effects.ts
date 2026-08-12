@@ -24,6 +24,20 @@
  * a field that fails to close. `seam()` is only the backstop, and it has two
  * blind spots worth knowing before trusting it (see its own note).
  *
+ * **The device adds ~24 blank columns to a scrolling type 1 save, so "the join is as
+ * visible as any other column" describes the buffer, not the panel.** A 27-column
+ * save carrying no client gap at all showed a full screen width of dark between
+ * repeats (Jacob, by eye, 2026-08-11, against a payload *verified* off the app's wire
+ * log); the record `DATCP` writes is `ncols = N + 48` with the content at store
+ * column 24, so a scroll resuming at the content walks `N + 24`. One earlier
+ * observation contradicts it - a solid 32-column block looped with no dark pass at
+ * all in the session that saved it (*verified*, 2026-08-10) - so whether the 24 is
+ * unconditional or only follows a restore from flash is open, and the two looks that
+ * settle it are the first thing in `research/loop-gap-2026-08-10.md`. No generator
+ * changes either way: what closes here still closes. What a wide loop cannot promise
+ * is that the panel shows no join, and the route to that is a JGX sub-command
+ * patching the wrap bound, not a change to any field.
+ *
  * The dither has to close too. Its 8-column tile phase jumps at the join unless
  * the width is a multiple of `TILE`, which is what `seamlessWidth` is for and why
  * every width reaching `render` goes through it. That the phase then continues
@@ -71,7 +85,15 @@ export const DEFAULT_COLUMNS = 240
 export const SLOWEST_SCROLL = 3.8
 export const FASTEST_SCROLL = 12.5
 
-/** How long one pass takes at the device's two extremes, in seconds. */
+/**
+ * How long one pass takes at the device's two extremes, in seconds.
+ *
+ * Counts the uploaded columns only. The panel's pass is `columns + 24`, because the
+ * device appends about a screen's width of blank to a scrolling type 1 save, so this
+ * is short by 1.9s at `SPEED` 100 and 6.3s at `SPEED` 0 (track 16,
+ * `research/loop-gap-2026-08-10.md`; measured by eye against a wire-verified payload,
+ * with one contrary observation still unexplained).
+ */
 export const loopSeconds = (columns: number): { slowest: number; fastest: number } => ({
   slowest: columns / SLOWEST_SCROLL,
   fastest: columns / FASTEST_SCROLL,
@@ -477,9 +499,15 @@ export interface FireOptions extends RenderOptions {
  * vertical motion this panel can fake, so shearing the tongues sideways makes
  * them appear to lick upward as the loop goes past.
  *
- * At `levels: 4` the dithered gradient breaks into embers at the tips; at
- * `levels: 2` it is the silhouette the name says, so it survives the wide saved
- * route unflattened.
+ * At `levels: 4` the dithered gradient breaks into embers at the tips, and only
+ * `dither: 'none'` gives the silhouette the name says. **Two levels make the
+ * dither worse, not better**: the single threshold band covers most of the
+ * flame's body, so 93 cells across 81 of 240 columns come out dark *below* the
+ * tip, against 6 at `levels: 4`. A wide fire is stuck with `levels: 2`, because
+ * that is all the saved route carries, so a wide fire wants `dither: 'none'`
+ * with it. *Corrected: this said `levels: 2` was already the silhouette and so
+ * survived the saved route unflattened; it survives it moth-eaten.* Which of the
+ * two reads better as fire on 9 rows is unwitnessed, like the rest of this file.
  */
 export function fireField(opts: FireOptions = {}): Field {
   const tongue = Math.max(2, opts.tongue ?? 12)
@@ -508,7 +536,7 @@ export const fire = (opts: FireOptions = {}): Bitmap => render(fireField(opts), 
 export interface MirrorOptions extends PlasmaOptions {
   /** What to reflect: a registry name, or any `Field` of your own. */
   inner?: string | Field
-  /** Reflected segments round the loop. Rounded whole; axes every half-segment. */
+  /** Reflected segments round the loop. Snapped by `mirrorFolds`; two axes each. */
   folds?: number
 }
 
@@ -519,14 +547,62 @@ export interface MirrorOptions extends PlasmaOptions {
  * (`notes/what-to-build.md`, "Trippy visuals"). The loop is cut into `folds`
  * segments and the inner field's whole traverse plays forwards then backwards
  * inside each, so every half-segment boundary is a mirror axis. The default
- * spaces the axes one panel width apart, which keeps an axis on screen at all
- * times, and the lenses mirror each other whenever one crosses the bridge.
+ * spaces the axes about one panel width apart, which keeps an axis on screen at
+ * all times.
+ *
+ * **The axes sit between two columns, not on one, and that half column is what
+ * makes the two lenses mirror each other.** The panel's own dead map is
+ * symmetric about x = 11.5 (`display.ts`: rows 0 and 8 dead from 9 to 14, row 1
+ * from 10 to 13), so the bridge is a gap between columns 11 and 12 rather than a
+ * column. Fold on whole columns instead and the picture's symmetry can never
+ * line up with the panel's: at the kindest scroll offset 22 of the 100 live
+ * mirror pairs still differ, and 71 at some widths.
+ *
+ * Half a column of phase costs nothing and closes just as exactly. With it, and
+ * with the fold count snapped to a divisor of the width (`mirrorFolds`), every
+ * width the ceiling allows reflects exactly and then comes back to it every 23
+ * or 24 columns at the round widths - worst case every 89, at 712, whose
+ * divisors all sit far from the 15 folds it asks for. That is 2 to 23 seconds
+ * apart at the device's own `SPEED` range. All of it *verified* structurally by
+ * `effects.test.ts`, which is not the same as seen: how a mirrored dithered loop
+ * reads on 9 rows is unwitnessed, like everything else in this file.
+ *
+ * **Ordered dither cannot be mirrored and so it is off by default here**, the
+ * one place in this file where the texture is the wrong call. The Bayer
+ * threshold is a function of the panel column, and `threshold(r, c)` is not
+ * `threshold(r, 23 - c)`, so it shades the two sides of an axis differently: 47
+ * of those 100 pairs differ under it however well the axis is placed. Pass
+ * `dither: 'ordered'` to trade the symmetry back for texture.
  *
  * Reflection replaces wrapping, and that has two consequences worth naming.
- * **The mirrored loop closes whether or not the inner field does**: travelling
- * out and back arrives where it started, so this is the one generator that can
- * take a field built against raw `col` and make it seamless, and the join is an
- * axis like any other rather than a seam. And everything depends on `u` only
+ * **The mirrored loop closes for any inner that is continuous in `col`**:
+ * travelling out and back arrives where it started, so this generator can take a
+ * field built against raw `col` and make it seamless, and the join is an axis
+ * like any other rather than a seam.
+ *
+ * ***Corrected 2026-08-12.*** This said "closes whether or not the inner field
+ * does", and named as its example the one case where it is false. **A step
+ * function does not survive being folded**, because the fold phase samples the
+ * inner at fractional positions: `starfieldField` hashes `Math.trunc(col)`, and
+ * the folded coordinate either side of the wrap comes out as 15.999999999999
+ * against 16.000000000002, which truncate to different integers and so hash to
+ * different stars. Measured with `fieldGap` over the mirror-by-inner cross
+ * product: every continuous inner closes at 1e-13 or better, and
+ * `mirror(inner: 'starfield')` reaches **0.949**, which is a visible seam in a
+ * loop that costs five page erases to upload. The half-column phase that causes
+ * it is not a bug to remove: review-15 added it so the folds land on the bridge
+ * rather than on a column centre, and without it mirror does not mirror across
+ * the two lenses at all. **So this is a real trade, not an oversight**:
+ * bridge-symmetric folding and a step-function inner cannot both hold.
+ *
+ * Why it escaped review-15, which did check closure: that walk went through the
+ * `FIELDS` registry, so it exercised `mirror` with its *default* inner and every
+ * other generator on its own. Nothing walked mirror **against each inner**, and
+ * that is the cross product `effects.test.ts` now covers. `fieldGap` is still the
+ * check with teeth, and a caller offering inner choices must run it per
+ * combination rather than once per generator.
+ *
+ * And everything depends on `u` only
  * through the folded position, so the loop repeats every segment: `folds` trades
  * variety for symmetry, with `folds: 1` a palindrome of the whole inner field
  * that never repeats.
@@ -538,18 +614,70 @@ export interface MirrorOptions extends PlasmaOptions {
  * where the symmetry drowns in its own repetition.
  */
 export function mirrorField(opts: MirrorOptions = {}): Field {
-  const field =
-    typeof opts.inner === 'string'
-      ? namedField(opts.inner, opts)
-      : opts.inner ?? plasmaField({ ...opts, cycles: opts.cycles ?? 1 })
+  const field = innerField(opts)
+  // Resolved on first sample rather than up front, because a field is reusable
+  // at any width and only the sample knows which one. Cached because it is a
+  // divisor search and `render` asks 9 times per column for the same answer.
+  let cachedFor = Number.NaN
+  let folds = 1
   return (s) => {
-    const folds = Math.max(1, Math.round(opts.folds ?? s.columns / (2 * COLS)))
-    // Wrapped, because fieldGap probes one column past either end of the loop.
-    const wrapped = s.u - Math.floor(s.u)
+    if (s.columns !== cachedFor) {
+      cachedFor = s.columns
+      folds = mirrorFolds(s.columns, opts.folds)
+    }
+    // Half a column of offset puts the axes in the gaps between columns, where
+    // the nose bridge is. Wrapped as well, because fieldGap probes one column
+    // past either end of the loop.
+    const shifted = s.u + 0.5 / s.columns
+    const wrapped = shifted - Math.floor(shifted)
     const p = wrapped * folds - Math.floor(wrapped * folds)
     const t = p < 0.5 ? 2 * p : 2 * (1 - p)
     return field({ ...s, u: t, col: t * s.columns })
   }
+}
+
+/**
+ * Reflected segments for a width, snapped to a count that divides it.
+ *
+ * The snap is what makes the reflection recur rather than happen twice a pass.
+ * Axes sit every `columns / (2 * folds)` columns, and only an axis landing
+ * between two columns reflects the lenses onto each other, so that spacing has
+ * to be a whole or half number of columns: 736 over the unsnapped 15 folds is
+ * 24.53, which lines up exactly twice in the whole 736-column pass. Snapped to
+ * 16 it lines up every 23 columns, a couple of seconds apart.
+ *
+ * Exported because the snap moves what the caller asked for, so a screen
+ * offering a folds control has to be able to show what it actually got.
+ */
+export function mirrorFolds(columns: number, folds?: number): number {
+  const want = Math.max(1, Math.round(folds ?? columns / (2 * COLS)))
+  // NaN and Infinity are passed through to draw nothing, which is what every
+  // other shaping option in this file does with them (`plasma`'s `rise`).
+  if (!Number.isFinite(want)) return want
+  let best = 1
+  for (let f = 1; f * 2 <= columns; f++) {
+    if (columns % f === 0 && Math.abs(f - want) < Math.abs(best - want)) best = f
+  }
+  return best
+}
+
+/**
+ * What to reflect: a name, a field, or the default plasma.
+ *
+ * Typed as `string | Field`, and checked anyway for the same reason `render`
+ * checks `levels`: the untyped callers are the CLI and anything rebuilding an
+ * effect from stored options, and an inner that is not a function otherwise
+ * surfaces as "field is not a function" from inside the sample loop, naming
+ * neither the option nor the effect that carried it.
+ */
+function innerField(opts: MirrorOptions): Field {
+  const inner = opts.inner
+  if (inner === undefined || inner === null) {
+    return plasmaField({ ...opts, cycles: opts.cycles ?? 1 })
+  }
+  if (typeof inner === 'string') return namedField(inner, opts)
+  if (typeof inner === 'function') return inner
+  throw new Error(`inner must be a field or an effect name, got ${typeof inner}`)
 }
 
 /** Resolve a registry name to its field, refusing the one that would recurse. */
@@ -561,7 +689,23 @@ function namedField(name: string, opts: RenderOptions): Field {
   throw new Error(`no field called ${name}. One of: ${names}`)
 }
 
-export const mirror = (opts: MirrorOptions = {}): Bitmap => render(mirrorField(opts), opts)
+export const mirror = (opts: MirrorOptions = {}): Bitmap =>
+  // Spread first, then re-apply the default, so an explicit `dither: undefined`
+  // means this effect's default rather than render's, as for starfield.
+  render(mirrorField(opts), { ...opts, dither: opts.dither ?? 'none' })
+
+/**
+ * A lookup table with no prototype, because every name that reaches these comes
+ * from outside: a CLI argument, a stored preset, a tap on a list.
+ *
+ * `EFFECTS['constructor']` on a plain object hands back `Object` and passes an
+ * `if (!make)` guard, so the caller then renders `Object.prototype.toString` and
+ * fails somewhere unrelated - the CLI died in the ASCII printer with
+ * "bitmap[r].slice(...).map is not a function". With no prototype the miss is a
+ * miss and every existing "no such effect" message does its job.
+ */
+const registry = <T>(entries: Record<string, T>): Record<string, T> =>
+  Object.assign(Object.create(null) as Record<string, T>, entries)
 
 /**
  * Every generator by name, so a preview or a screen can offer the list without
@@ -571,7 +715,7 @@ export const mirror = (opts: MirrorOptions = {}): Bitmap => render(mirrorField(o
  * time, so a generator added later is held to closure, level range and monochrome
  * at `levels: 2` without anyone remembering to write the tests.
  */
-export const EFFECTS: Record<string, (opts?: RenderOptions) => Bitmap> = {
+export const EFFECTS: Record<string, (opts?: RenderOptions) => Bitmap> = registry({
   plasma,
   stripes,
   wave,
@@ -579,7 +723,7 @@ export const EFFECTS: Record<string, (opts?: RenderOptions) => Bitmap> = {
   starfield,
   fire,
   mirror,
-}
+})
 
 /**
  * The same generators as fields, before anything quantises them.
@@ -588,7 +732,7 @@ export const EFFECTS: Record<string, (opts?: RenderOptions) => Bitmap> = {
  * over fields written inside a test. That distinction is the whole point: the
  * check that has teeth has to reach the real thing.
  */
-export const FIELDS: Record<string, (opts?: RenderOptions) => Field> = {
+export const FIELDS: Record<string, (opts?: RenderOptions) => Field> = registry({
   plasma: plasmaField,
   stripes: stripesField,
   wave: waveField,
@@ -596,6 +740,6 @@ export const FIELDS: Record<string, (opts?: RenderOptions) => Field> = {
   starfield: starfieldField,
   fire: fireField,
   mirror: mirrorField,
-}
+})
 
 export const EFFECT_NAMES: string[] = Object.keys(EFFECTS)

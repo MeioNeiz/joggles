@@ -21,8 +21,10 @@
  *
  *  1. `abs 0x182a6`, 28 bytes: the `LOOP` dispatcher arm becomes a compare against
  *     `J` and a call into free flash. Costs `LOOP`, still reachable as `ANIM 19`.
- *  2. `abs 0x22b94`, exactly 16 bytes: the AES key becomes the crew group key. This
- *     both locks out the vendor app and *is* the crew credential.
+ *  2. `abs 0x22b94`, exactly 16 bytes: the AES key becomes the crew group key. This is
+ *     first a defence, since nobody with the stock vendor app can then drive a unit a
+ *     crew member is wearing, and the same 16 bytes are the crew credential. Applied only
+ *     to units we own and flash ourselves; strangers' units are never reflashed.
  *  3. `abs 0x2691c`, exactly 8 bytes: the advert name, so crew units are told from
  *     stock at scan time. Not "8 or fewer": the firmware writes 6 hex characters of
  *     the MAC at a fixed offset of 8 and advertises a fixed 14 bytes, so a short

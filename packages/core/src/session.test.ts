@@ -92,11 +92,61 @@ test('an unacknowledged DATS never reaches DATCP, so no flash is spent', async (
   expect(t.to(p.CHAR_BULK_A)).toHaveLength(0)
 })
 
+/**
+ * The two questions a save answers, and why they are two.
+ *
+ * `status: 'saved'` is what it COST: the five erases happen at the device's end
+ * whatever it replies, so the ledger counts them and the wear number stays honest.
+ * `committed` is what it ACHIEVED. Everything downstream that displays the content -
+ * `deliver()`'s `MODE`, `Cycler`'s residency, the ledger's `ok` flag - hangs off the
+ * second one, and reading the first as the second is the defect track 32 fixed.
+ */
 test('a rejected save is still counted: the erases happened anyway', async () => {
   const t = datsDevice({ fail: true })
   const g = await attach(t)
   const result = await g.save(panelBitmap('HI'), { blockSleep: 0 })
-  expect(result).toMatchObject({ status: 'saved', reply: 'ERROR', saves: 1 })
+  expect(result).toMatchObject({
+    status: 'saved',
+    reply: 'ERROR',
+    committed: false,
+    saves: 1,
+  })
+  expect((await g.ledger()).recent.at(-1)).toMatchObject({ ok: false, type: 1 })
+})
+
+test('committed is only ever the device saying DATCPOK', async () => {
+  const ok = await attach(datsDevice())
+  expect(await ok.save(panelBitmap('HI'), { blockSleep: 0 })).toMatchObject({
+    status: 'saved',
+    committed: true,
+  })
+  // A skip is a claim about what the device already held, not about a commit that
+  // happened, so nothing was acknowledged and it reads false.
+  expect(await ok.save(panelBitmap('HI'), { blockSleep: 0 })).toMatchObject({
+    status: 'skipped',
+    committed: false,
+  })
+
+  const refused = new MockTransport()
+  refused.answer = () => [reply('ERROR')]
+  expect(
+    await (await attach(refused)).save(panelBitmap('HI'), { blockSleep: 0 }),
+  ).toMatchObject({ status: 'refused', committed: false })
+})
+
+test('the ledger record says which store the save aimed at', async () => {
+  const t = datsDevice()
+  const g = await attach(t)
+  await g.save(Array.from({ length: 9 }, () => [3, 1, 0, 2]), {
+    blockSleep: 0,
+    type: dats.TYPE_IMAGE,
+  })
+
+  // The type it ANNOUNCED, so residency is read off what went on the wire rather than
+  // off a guess about the bitmap. `budget.storedHash` is what consumes it.
+  const rec = (await g.ledger()).recent.at(-1)!
+  expect(rec.type).toBe(dats.TYPE_IMAGE)
+  expect(rec.ok).toBe(true)
 })
 
 test('re-saving what the device already holds writes nothing at all', async () => {
@@ -125,6 +175,68 @@ test('a save loop dies on the second iteration rather than wearing the flash', a
   expect(err).toBeInstanceOf(BudgetError)
   expect((err as BudgetError).rule).toBe('interval')
   expect(t.writes.length).toBe(before)
+})
+
+/**
+ * How far the upload has got, which at the vendor's pacing is five seconds of nothing.
+ *
+ * The data half only: the bar is track 34's. What matters here is that the numbers
+ * mean blocks that are actually on the wire, because a bar drawn from anything else is
+ * a spinner with extra steps.
+ */
+test('progress counts blocks written, from 0 up to the block count', async () => {
+  const t = datsDevice()
+  const g = await attach(t)
+  const bitmap = panelBitmap('HELLO WORLD')
+  const seen: Array<[number, number]> = []
+
+  await g.save(bitmap, { blockSleep: 0, progress: (sent, total) => seen.push([sent, total]) })
+
+  const blocks = dats.chunkPayload(dats.encodeBitmap(bitmap)).length
+  expect(blocks).toBeGreaterThan(2)
+  // One report before the first write, so a bar can be on screen for the whole of the
+  // wait rather than appearing once the first block is already out.
+  expect(seen[0]).toEqual([0, blocks])
+  expect(seen).toHaveLength(blocks + 1)
+  expect(seen.at(-1)).toEqual([blocks, blocks])
+  expect(seen.map(([sent]) => sent)).toEqual([...Array(blocks + 1).keys()])
+  // The count is the wire's, not the payload's idea of itself.
+  expect(t.to(p.CHAR_BULK_A)).toHaveLength(blocks)
+})
+
+test('a progress callback that throws cannot take the save down with it', async () => {
+  const t = datsDevice()
+  const g = await attach(t)
+  const bitmap = panelBitmap('HI')
+
+  const result = await g.save(bitmap, {
+    blockSleep: 0,
+    progress: () => {
+      throw new Error('a screen unmounted mid-upload')
+    },
+  })
+
+  // Five erases were going to be spent either way. A bar is not allowed to be the
+  // reason they buy nothing, which is what an uncaught throw here would mean: the
+  // device left waiting for a DATCP and the caller holding an exception.
+  expect(result).toMatchObject({ status: 'saved', committed: true })
+  expect(t.commands).toEqual(['DATS', 'DATCP'])
+})
+
+test('a cancelled upload stops reporting where it stopped writing', async () => {
+  const t = datsDevice()
+  const g = await attach(t)
+  const seen: number[] = []
+
+  const result = await g.save(panelBitmap('HELLO WORLD'), {
+    blockSleep: 0,
+    progress: (sent) => seen.push(sent),
+    cancel: () => t.to(p.CHAR_BULK_A).length >= 3,
+  })
+
+  expect(result.status).toBe('refused')
+  expect(seen).toEqual([0, 1, 2, 3])
+  expect(t.commands).toEqual(['DATS'])
 })
 
 test('show sends only changed columns, and acks the last write of the frame', async () => {

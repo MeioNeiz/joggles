@@ -9,7 +9,9 @@
  * Keyed the way `SessionOptions.device` is: the advert name by default, which carries
  * the last three bytes of the MAC. So a nickname follows the unit across a reinstall
  * and across phones, not the platform handle, which is per-host - and the key lines up
- * with the ledger's without sharing its file.
+ * with the ledger's without sharing its file. What the key does not survive is a rename
+ * of the advert itself: flashing our own firmware makes the unit `JOGGLES-xxxxxx`, which
+ * orphans its nickname exactly as it orphans its ledger row.
  *
  * Storage is the ledger's shape (one JSON object, read once, memory first) but its own
  * file on disk, wired in `nicknames-store.ts`. A separate file on purpose: losing a
@@ -32,9 +34,30 @@ export interface TextFile {
 /** Row-readable ceiling. The scan list's TextInput enforces it at entry, set() here. */
 export const MAX_NICKNAME = 40
 
-/** What set() actually stores: trimmed and capped. Empty means "no nickname". */
+/**
+ * What set() actually stores: trimmed and capped. Empty means "no nickname".
+ *
+ * Trimmed again after the cut, and a high surrogate the cut left dangling is dropped:
+ * the cap counts UTF-16 units, so it can land on a space or inside an emoji, and a lone
+ * surrogate survives a JSON round trip to render as a tofu box for good.
+ */
 export function clean(name: string): string {
-  return name.trim().slice(0, MAX_NICKNAME)
+  return name.trim().slice(0, MAX_NICKNAME).replace(/[\uD800-\uDBFF]$/, '').trim()
+}
+
+/**
+ * The nickname for a device in a map copy, or null.
+ *
+ * Typed rather than truthy, because a plain-object map answers for every member of
+ * `Object.prototype`: an advert named `__proto__` reads back an object and one named
+ * `toString` a function, and either handed to a React `Text` child takes the row down
+ * rather than falling through to the advert name. `ble.ts` only surfaces adverts
+ * starting `GLASSES-`/`JOGGLES-`, so nothing reaches that today; this is what keeps the
+ * declared `string | null` true for whatever keys the map next.
+ */
+export function nicknameIn(names: Record<string, string>, device: string): string | null {
+  const name = names[device]
+  return typeof name === 'string' && name.length > 0 ? name : null
 }
 
 export interface NicknameStore {
@@ -83,7 +106,7 @@ export function createStore(file: TextFile): NicknameStore {
 
   return {
     get(device) {
-      return load()[device] ?? null
+      return nicknameIn(load(), device)
     },
     set(device, name) {
       const map = load()

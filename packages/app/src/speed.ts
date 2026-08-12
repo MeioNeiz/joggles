@@ -1,57 +1,21 @@
 /**
- * What `SPEED n` actually does to the scroll rate, so the preview can be a
- * simulation rather than an impression.
+ * The three speeds Compose offers, and nothing else.
  *
- * *verified*, disassembled from the bucketing ladder at `abs 0x183da` in the decoded
- * application image. `SPEED n` compares its argument against 10, 20, 30, ... 90 and
- * writes a frame divisor to RAM `0x2000266e`; the scroll advances one column every
- * `divisor` ticks of the 50 Hz animation clock (`abs 0x18052` holds `0x32`). So a
- * column lasts `divisor * 20ms`, from 260ms at the bottom to 80ms at the top.
- *
- * **This corrects `research/firmware-internals.md`**, which records the ladder as
- * comparing against "50, 60, 70, 80, 90". Those are the five comparisons inside the
- * address range it quotes (`abs 0x18400`-`0x18428`); four more sit just before it at
- * `0x183de`-`0x183fe`, so there are ten buckets rather than six. The 3.8 to 12.5
- * columns per second the same paragraph gives is right, and is these two endpoints.
- *
- * **This belongs in `packages/core/src/protocol.ts`**, next to `protocol.speed()`,
- * so the CLI shares it. It is here because `protocol.ts` is not this track's file
- * while other agents are running; see `notes/parallel-tracks.md`.
+ * **The ladder itself has moved to `packages/core/src/protocol.ts`**, beside
+ * `protocol.speed()` which builds the frame: what `SPEED n` does to the panel is a
+ * fact about the firmware, so the CLI and the phone must read it from one place. The
+ * disassembly and the correction it makes to `research/firmware-internals.md` moved
+ * with it. What is left here is a UI choice, which is why it stays in the app.
  */
+import { protocol as p } from '@joggles/core'
 
-/** One tick of the firmware's animation clock, which runs at 50 Hz. */
-const TICK_MS = 20
+/** Re-exported so a screen needs one import for "how fast, and what to call it". */
+export const divisor = p.speedDivisor
+export const msPerColumn = p.msPerColumn
+export const columnsPerSecond = p.columnsPerSecond
 
 /**
- * `[argument at most, frame divisor]`, in the order the firmware tests them.
- * Anything above the last threshold gets `FASTEST`.
- */
-const LADDER: Array<[number, number]> = [
-  [10, 13],
-  [20, 12],
-  [30, 11],
-  [40, 10],
-  [50, 9],
-  [60, 8],
-  [70, 7],
-  [80, 6],
-  [90, 5],
-]
-
-const FASTEST = 4
-
-/** Ticks the device holds each column for. 13 at the slowest, 4 at the fastest. */
-export const divisor = (speed: number): number =>
-  LADDER.find(([atMost]) => speed <= atMost)?.[1] ?? FASTEST
-
-/** Milliseconds the device holds each column: 260 at the slow end, 80 at the fast. */
-export const msPerColumn = (speed: number): number => divisor(speed) * TICK_MS
-
-/** The same as a rate, which is the number worth showing a person. */
-export const columnsPerSecond = (speed: number): number => 1000 / msPerColumn(speed)
-
-/**
- * The presets the UI offers: both ends of the real ladder, and its middle.
+ * Both ends of the real ladder, and its middle.
  *
  * `Slow` and `Fast` are chosen to reach the extreme buckets rather than stopping one
  * short - 5 lands under the first threshold and 95 above the last.

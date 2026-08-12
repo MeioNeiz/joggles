@@ -1,8 +1,10 @@
 # Firmware and OTA container: TR1906R04
 
 **Status:** container format solved and verified against both stock images.
-**Scope:** OTA image format, firmware internals, SoC identity, flash map, flashing
-risk and recovery.
+**Scope:** the container and the image's identity - header fields, the obfuscation and
+how it was recovered, the CRC, the load base, the SoC, and what is inside the two stock
+images. The flash map, the OTA state machine and the flashing procedure belong to
+`research/firmware-flashing.md` and are pointers here, not copies.
 **Reproduce:** `bun research/ota-codec.ts verify firmware/*.bin`
 
 Offset convention in this document: `body 0xNNNN` is an offset into the
@@ -22,7 +24,7 @@ address. `abs = body + 0x16800`.
 | Region below `abs 0x16800` | the **BLE stack**, ~90 KB. *Was wrongly recorded here as the bootloader* | verified |
 | Saved user content | `abs 0x3c000`, a `0x600`-byte (1.5 KB) buffer | derived |
 | OTA service host | the application image, not a separate bootloader advertiser | verified |
-| Safe to flash today | **yes for a patched stock app image**, see `firmware-flashing.md` | judgement |
+| Safe to flash today | **staging yes, committing no.** *Was "yes for a patched stock app image"; a stock-over-stock commit bricked a unit on 2026-08-08.* `firmware-flashing.md`, "Incident" | verified the hard way |
 
 ## Verdict on flashing: superseded
 
@@ -43,6 +45,10 @@ missed it because the base is loaded at runtime from a const table at `abs 0x269
 rather than appearing as an immediate.
 
 The lesson worth keeping: absence of a literal is not absence of the thing.
+
+**None of that makes committing safe.** Staging is verified on hardware and costs
+nothing; ctrl `03` bricked `GLASSES-12C3EF` on 2026-08-08 with the stock image it was
+already running. `research/firmware-flashing.md`, "Incident".
 
 ## OTA container format
 
@@ -166,26 +172,31 @@ defining the external `__HXT` as 16 MHz. Recorded rather than deleted because
 it is wrong in a way worth remembering. See `hardware-access.md`, "Our own unit,
 opened".*
 
-### Memory and flash map
+### Where the image sits in flash
+
+`research/firmware-flashing.md` owns the flash map: it is corrected there, evidenced
+against Panchip's own `section_cfg.h`, and `research/README.md` declares that version
+canonical. It is deliberately not restated here. Only the two container-side rows
+matter for reading or rebuilding an image:
 
 | Range | Size | Contents | Confidence |
 | --- | --- | --- | --- |
-| `abs 0x0` - `0x167ff` | ~90 KB | **BLE stack.** *Previously recorded here as the bootloader, which was wrong.* Published as `stack_1.0.0.hex` in Panchip's SDK | verified |
-| `abs 0x16800` | - | application load base; body `0` lands here | verified |
-| `abs 0x16808` - `0x26a24` | 66 KB | application image | verified |
-| `abs 0x29400` - `0x3bfff` | 76.8 KB | **OTA staging bank.** *Previously "free or unknown, no literal points at a staging base", which was wrong: the base is a runtime value from a const table at `abs 0x26930`* | verified |
-| `abs 0x3d800` / `0x3da00` | 512 B each | section info page and backup; the OTA handoff record goes to the backup | verified |
-| `abs 0x3dc00` | 8 KB | **bootloader.** Never written by an app OTA | derived |
-| `abs 0x3c000` - `0x3c5ff` | 1.5 KB | **uploaded user content**, a `0x600`-byte buffer; literals at `0x3c000` (x8), `0x3c200`, `0x3c600` | derived |
-| `abs 0x3c800` | 8 B | upload metadata record | derived |
-| `abs 0x3f000` | 4 KB | **wrong: not referenced at all.** All 7 "references" are animation frame data. See `firmware-flashing.md` | corrected |
-| `abs 0x100000` | - | LDROM window, referenced at `0x00101000` | derived |
-| `abs >= 0x40000` | - | never referenced, consistent with a 256 KB part | derived |
+| `abs 0x16800` | - | application load base; **body offset `0` loads here** | verified |
+| `abs 0x16808` - `0x26a24` | 66 KB | the application image, i.e. the container body | verified |
 
-The `0x600`-byte content buffer at `abs 0x3c000` is the concrete ceiling on saved
-content: 1536 bytes is 512 columns at 3 bytes per column, or 768 columns at 2 bytes
-per column. Either is far beyond the 24-column panel and far beyond the 72 bytes the
-vendor app ever uploads.
+The ~90 KB below `abs 0x16800` is the **BLE stack**. *Previously recorded here as the
+bootloader, which was wrong*: the bootloader is 8 KB at `abs 0x3dc00`, above the
+application, and an app OTA never writes it.
+
+*Corrected: this section used to size the `0x600`-byte saved-content buffer at
+`abs 0x3c000` as "512 columns at 3 bytes per column, or **768 columns** at 2 bytes per
+column", and 768 was then quoted around the notes as a usable limit. It is the buffer's
+capacity, not what the firmware accepts, and this was 768's last live copy. The measured
+type 1 ceiling is **740 columns**: 1480 bytes returns `DATCPOK` and 745 columns returns
+`ERROR`, bisected from both directions on hardware in `research/vendor-app-protocol.md`.
+The firmware's own bound is 743 columns / 1486 bytes, because `DATCP` compares a counter
+that starts at 48, adds 2 per column and wraps at 1536; mechanism and addresses in
+`research/firmware-internals.md`, "`DATCP` is an exact-match gate".*
 
 ### How the load base was established
 
@@ -202,9 +213,13 @@ Four independent confirmations agree:
 - The word at body `0` is `0x00026904`, exactly `0x18` before the `GLASSES-`
   string at body `0x1011c` (`abs 0x2691c`), so it is a device-info block pointer.
 
-Note that the image head is **not** a Cortex-M vector table: body `0x08` is the
-initial SP, body `0x0c` the entry vector, and body `0x10` begins a startup stub
-that sets SP from a literal and branches to `abs 0x1f86c`.
+Note that the image head is **not** a Cortex-M vector table. The first two words of the
+stock head are that device-info pointer, `0x00026904`, then `0x03010100`, both *verified*
+against the container, so anything that reads them as an initial SP and a reset vector
+reports a failure that is not one; `research/tools/dumpcheck.ts` deliberately makes no
+such claim about a dump of `abs 0x16800`. The real fields sit further in: body `0x08` is
+the initial SP, body `0x0c` the entry vector, and body `0x10` begins a startup stub that
+sets SP from a literal and branches to `abs 0x1f86c`.
 
 ### Notable contents
 
@@ -218,7 +233,8 @@ that sets SP from a literal and branches to `abs 0x1f86c`.
 | Version string | body `0x7808` (`abs 0x1e008`) | `TR1906R04-10`, or `TR1906R04-01-10` in the other image |
 | `GLASSES-` name prefix | body `0x1011c` (`abs 0x2691c`) | advertised-name prefix |
 | Hard-fault handler | body `0x142c` | with an `r0 = 0x%x` style register dump |
-| Palettes | `abs 0x22da8` | `00000000 03000000 0f000000 3f000000 ff000000 ff030000 ff0f0000 ff3f0000` |
+| Rhythm bar-height table, **not palettes** | `abs 0x22da8` | **ten** words: `0, 3, f, 3f, ff, 3ff, fff, 3fff, ffff, 3ffff`, i.e. `4^n - 1`, meaning n rows lit at level 3. *verified* from the image. *Recorded here as a "palette" of eight words, which was wrong twice over: wrong thing, wrong count.* Analysis: `firmware-internals.md`, "The rhythm channel is a full-panel atomic write" |
+| Text level LUT, the real one | `abs 0x22da4` | two entries, `00 03 00 00`: the 1-bit-to-2-bit expander for uploaded text, off to level 0 and on to level 3 |
 | Glyph strip and a "Cool" bitmap | body `0x10137`, `0x101c4` | 5-row glyphs, and a 7-row bitmap in 16-bit columns; factory default content |
 
 Command opcodes (`SMVEW`, `IMAG`, `MODE`, ...) appear nowhere as ASCII, not even as
@@ -228,37 +244,31 @@ The AES key's presence here independently confirms the key previously recovered 
 brute-forcing `libAES.so`. The published Shining Mask key
 `32672f7974ad43451d9c6c894a0e8764` appears nowhere in these images.
 
-## OTA transport protocol
+## How the container reaches the wire
 
-Panchip-style, hosted by the application firmware. Service `0xfd00`, data
-characteristic `0xfd01` (write), control characteristic `0xfd02` (write plus
-notify), CCCD `0x2902` on `0xfd02`.
+The packets themselves, the device's state machine and the size envelope belong to
+`research/firmware-flashing.md`: they are read off the disassembled handler at
+`abs 0x1ea00`, cross-checked against the vendor's `PanchipOtaManager`, and implemented
+in `packages/core/src/dfu.ts`. Use those three, not a copy here.
 
-Control opcodes are `1` version, `2` size, `3` crc, `4` reset. Replies are prefixed
-`0x80`. Other declared response codes: `failed` 1, `finished` 2, and `0x55` for both
-`crc_succeed` and `finished_succeed`.
+What belongs here is which bytes of the container go on the wire, and what the app does
+around them:
 
-    -> fd02  01 | app_lo app_hi dev_lo dev_hi pro_lo pro_hi 00 00
-    <- fd02  80 01 <6 bytes device version>     all-0xFFFF means unset
-    -> fd02  02 | type | codeSize[4] LE         start
-    <- fd02  80 02 00                           accepted; nonzero = fail
-    -> fd01  <index_lo index_hi> <payload>      one packet per ACK
-    <- fd02  80 04                              per-packet ACK, send next
-    -> fd02  03 | crc32[4]                      verify; 20 s timeout in the app
-    <- fd02  80 03 00                           CRC OK; nonzero = fail
-    -> fd02  04 | crc32[4]                      reset: constructed but never sent
+- **The 16-byte file header is never transmitted.** Streaming starts at body `0` and the
+  body goes out still obfuscated, so `codeSize` and `crc32` reach the device over the
+  control channel instead. That is the same fact as "the device must hold the pad".
+- The app requests **MTU 203**, giving `packetSize = 200`: each data packet is a 2-byte
+  little-endian sequence index plus up to 198 firmware bytes.
+- The OTA channel is the one place the app deliberately **bypasses AES**: it writes raw
+  bytes to `fd01`/`fd02` and routes those notifications around the decrypt step.
 
-The app requests MTU 203, giving `packetSize = 200`, so data packets carry a 2-byte
-little-endian sequence index plus up to 198 firmware bytes. **The 16-byte file
-header is never transmitted**: streaming starts at body `0`, and the `codeSize` and
-`crc32` reach the device through the control channel instead.
-
-Transfer is stop-and-wait with the device pacing every packet. There is no erase
-command from the app, no resume logic (a retry restarts from the beginning), and no
-signature verification. On CRC success the device activates and reboots by itself.
-
-The OTA channel is the one place the app deliberately **bypasses AES**: it writes
-raw bytes and routes `fd01`/`fd02` notifications around the decrypt step.
+*Corrected: this document listed the control opcodes as "`1` version, `2` size, `3` crc,
+**`4` reset**" and drew a `04 | crc32[4]` packet described as "reset: constructed but
+never sent". **The device has no `04` handler at all** - the ctrl dispatcher at
+`abs 0x1ebc2` tests 1, 2 and 3 only. The vendor app does construct an `04` frame and
+never sends it, which is where the entry came from, but there is nothing on the device
+that would answer it. `80 04` in the other direction is the per-write ACK and is
+unrelated.*
 
 ### No guard rails
 
@@ -273,68 +283,39 @@ called: the version reply proceeds straight to `startOTA`. Since the two bundled
 images are different hardware variants, the vendor app will happily flash the wrong
 variant. Do not trust its checks.
 
-## Flashing risk and recovery
+## Flashing risk and recovery: not here
 
-### Why a bad flash might be permanent: superseded
+The risk analysis, the size envelope and the safe procedure are
+`research/firmware-flashing.md`; the SWD recovery route, the brick modes and what is
+unrecoverable are `research/hardware-access.md`. Two items are kept below: one because
+it is a recorded error, one because it is the probe a reader of *this* file wants.
 
-**Kept to record the error. Read `research/firmware-flashing.md`.**
-
-This section framed staging-versus-in-place as "the single biggest open risk" and
-unknowable without a dump. It is answerable from the image we already had, and the
-answer is **staged**: writes go to `abs 0x29400`, never to `0x16800`, so the running
-application is never at risk during a transfer.
-
-One claim here was not merely wrong but dangerous, and is corrected explicitly:
+**One claim made here was not merely wrong but dangerous, so it is kept verbatim:**
 
 > "OTA writes start at `abs 0x16800` and go *upward*, away from the bootloader, so
 > even an oversized image cannot reach it by overrunning."
 
 Writes start at `abs 0x29400`, and the bootloader sits *above* them at `abs 0x3dc00`.
-The firmware accepts any `codeSize` below `0x19000` (102,400), while only 83,968
-bytes separate the staging base from the bootloader. **An oversized image erases the
-bootloader**, and that is the one brick reachable over the air. Keep images at or
-below the stock 66,084 bytes.
+The firmware accepts any `codeSize` below `0x19000` (102,400) while only 83,968 bytes
+separate the staging base from the bootloader, so **an oversized image erases the
+bootloader**. The binding ceiling is **76,800 bytes**, the size of the application
+region, and `ota.check()` enforces it. *Corrected: this passage also said "keep images at
+or below the stock 66,084 bytes", which is no longer right as a rule - our own
+`firmware/joggles-v1.bin` is 66,172 bytes by design, appending an extension into the
+headroom above stock.*
 
-Still true from this section: the OTA service lives in the **application** GATT table
-(body `0xc32c` and `0xc33c`) with no separate DFU advertiser, so an app image that
-fails to bring up BLE leaves no way back over the air. That, rather than the transfer,
-is the real risk.
+**Safe probe:** anything on the display service (`0xfff0` with the `d44bc439-...`
+characteristics) writes no flash. Worst case is a garbled panel, fixed by redrawing or
+`SMVEW 00`.
 
-### Hardware recovery via SWD
-
-Likely available, and this is the mitigation that makes firmware work reasonable.
-
-PAN1020 is Nuvoton NuMicro derived and exposes a standard ARM SW-DP. Community
-evidence: a PAN1020-based device answered an SWD probe with DPIDR `0x0bb11477`
-(ARM SW-DP, Cortex-M0). In the Nuvoton recovery model, ICP over SWD rewrites APROM,
-LDROM, data flash and the config words, and a whole-chip erase works even on a
-locked part, losing everything. ISP over UART only works if an LDROM loader is
-present and boot-select points at it, which is unknown here. Newer Panchip parts
-document an explicit SWD-protection feature, so a locked debug port is possible and
-must be tested.
-
-Net: recoverable, but only after finding SWDIO, SWCLK, nRESET, VDD and GND on the
-PCB, and only if a full 256 KB dump is taken **before** any OTA experiment.
-
-### Known ways parts in this family brick
-
-1. Flashing an image linked for the wrong base or flash layout. The most common
-   cause, and the reason the `abs 0x16800` base matters.
-2. Crystal-frequency mismatch.
-3. Locking the debug port or a config word.
-4. Power loss mid-erase.
-
-Items 1, 2 and 4 are SWD-recoverable. Item 3 is not.
-
-### Safe versus unsafe probes
-
-- **Safe:** anything on the display service (`0xfff0` with the `d44bc439-...`
-  characteristics). No flash writes; worst case is a garbled panel, fixed by
-  redrawing or `SMVEW 00`.
-- **Safe and useful:** OTA control opcode `01` on `fd02`, which reads back
-  `80 01 <6 bytes>`. It reports the on-device version and writes nothing to flash.
-- **Do not send OTA opcode `02` (size) unless committed to completing a correct
-  transfer.** That is the point at which the device most plausibly erases.
+*Falsified.* This section used to say "**do not send OTA opcode `02` (size)** unless
+committed to completing a correct transfer", calling it "the point at which the device
+most plausibly erases". Ctrl `02` writes no flash at all - *verified* from the handler,
+which only zeroes the counters, sets a section flag from `type` and stores the size - and
+staging without committing is now the *recommended* safe test on hardware. **The
+dangerous opcode is ctrl `03`, the commit**, which bricked a unit on 2026-08-08. The old
+wording pointed a reader's caution at the wrong opcode, which is worse than pointing it
+nowhere.
 
 ## Prior art, and what is new here
 
@@ -377,23 +358,3 @@ from the QN902x SDK, copy-pasted by Chinese firmware houses onto unrelated silic
 (it appears on Telink parts, LED masks, a toy car and a medicine cooler). It implies
 nothing about the SoC. Telink's own OTA profile is the `00010203-0405-...-1910`
 family, which this device does not use.
-
-## Next steps
-
-Cheapest and safest first:
-
-1. Enumerate the device and confirm it advertises `0xfff0`, and whether `0xfd00` is
-   present in the same discovery pass. Zero risk.
-2. Send OTA control opcode `01` on `fd02` and read the version reply. Zero flash
-   risk, and it confirms the OTA stack responds.
-3. Stage a few KB and disconnect without sending opcode `03`. Nothing is committed,
-   and it confirms staging on real hardware.
-4. Re-flash the stock `TR1906R04-10_OTA.bin` to exercise the whole path with no
-   novel-code risk, then patch the stock plaintext in place, keeping the length
-   identical, and re-pack with `type = 1`.
-
-An SWD dump is **no longer the gate**, only insurance, and the two things it uniquely
-buys are the BLE stack and the bootloader. See `research/hardware-access.md`. Full
-procedure and the size limits that matter: `research/firmware-flashing.md`.
-
-Rendering improvements need none of this. See `research/vendor-app-protocol.md`.

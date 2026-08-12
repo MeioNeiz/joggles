@@ -6,10 +6,12 @@ LED glasses, app Funky Glasses+. Protocol solved, verified on hardware.
 
 | File | What it holds |
 | --- | --- |
-| `notes/plan-after-the-brick.md` | **the current plan**: three tracks, only firmware delivery is blocked, and the SWD order of operations |
+| `notes/plan-after-the-brick.md` | **the firmware-delivery plan**: three tracks, the rules for unit 2 including the `--ldrom-verified` gate, and the SWD order of operations. For app work the current plan is `notes/parallel-tracks.md` plus `notes/app-plan.md` |
 | `notes/protocol.md` | key, frames, command table, panel geometry |
 | `notes/app-plan.md` | the phone app, the flash-wear numbers, and the ordered "Verify before building" list |
 | `notes/what-to-build.md` | delivery routes, ranked patches, festival ideas, what we decided against |
+| `notes/playlist.md` | the cycled playlist: why stock's button cannot do it, the one-reel design, and the residency defect |
+| `notes/library.md` | the phone's saved content: the three things called "the library" kept apart, store-the-recipe, why width is not a question, and what the four faces are for |
 | `notes/firmware-design.md` | our own firmware: architecture, wire formats, roadmap, safety envelope |
 | `research/README.md` | index of the teardown. `firmware-internals.md` is what the firmware actually is, tiered by trust in its Provenance section |
 
@@ -36,7 +38,9 @@ is where the detail lives. This file is pointers plus the traps that bite everyw
 - Firmware analysis is `research/tools/fwtool.ts`, **not grep**: its header explains the
   two scanning traps that have already put wrong entries in the docs. Edits go through
   `research/tools/patch.ts`, which refuses any patch whose expected old bytes do not
-  match. Pre-flash verification: `.claude/context/firmware-flash-readiness.md`
+  match. Pre-flash verification: "Safe procedure" in `research/firmware-flashing.md`
+  (steps 1-3 only, step 4 is struck) and "Reviewed 2026-08-09" in
+  `notes/firmware-design.md`
 
 ## Mental model
 
@@ -48,7 +52,8 @@ Wide buffers work: app limits are not device limits.
 fed one atomic 74-byte frame at a time, so greyscale depth and the level-to-brightness
 curve are the module's and unreachable by any firmware patch, and ~6.4ms per frame is
 the real floor. There is an on-board button the firmware polls: short press cycles
-built-in modes, 2s long press powers off (*derived*, pin unconfirmed).
+built-in modes, 2s long press powers off. The pin is P5.2 (*verified* by hand-decode);
+the behaviour is *derived* and unwitnessed.
 
 Service `fff0`, not `fee9`. Channels: `9600` commands | `9601` notify | `960a` DATS
 upload stream | `960b` live columns and rhythm. Save is `DATS <type> <len16>` ->
@@ -57,7 +62,8 @@ slot index. `IMAG` and `ANIM` banks are read-only built-ins.
 
 9 rows x 24 columns spanning both lenses, row 0 bottom, col 0 left. Dead LEDs at the
 top-row middle six and the nose notch (`display.alive()`). Rows 2-7 is the only band
-alive in every column, which is why the scrolling font is 5 rows. Packing differs per
+alive in every column, which is why a scrolling font is 5 or 6 rows and never 9, and why
+the tall one is placed rather than scrolled. Packing differs per
 channel: `notes/protocol.md`, and the `dats.ts` docblock for the DATS row mapping.
 
 ## Code map
@@ -65,15 +71,28 @@ channel: `notes/protocol.md`, and the `dats.ts` docblock for the DATS row mappin
 | File | What it is, and the thing not to get wrong |
 | --- | --- |
 | `core/src/session.ts` | `Glasses`, all sequencing, transport-agnostic through `transport.ts`. `Glasses.attach(transport, name)`; the CLI's `open()` lives in `cli/src/glasses.ts` |
-| `core/src/budget.ts` | flash wear. `session.save()` is the only caller of `dats.datsComplete()` and `choke-point.test.ts` fails the build if a second appears. Duplicate payloads skip; 3s apart, 30/hour or 200/day **throw** rather than queue. `bun cli ledger` |
+| `core/src/budget.ts` | flash wear, plus the only record of what the device is holding. `session.save()` is the only caller of `dats.datsComplete()` and `choke-point.test.ts` fails the build if a second appears. Duplicate payloads skip; 3s apart, 30/hour or 200/day **throw** rather than queue. Every `SaveRecord` says which store it hit, so the skip and `storedHash()` are **per DATS type**, and a record with no type reads as unknown rather than as type 1. `bun cli ledger` |
 | `core/src/content.ts` | the one `Bitmap` plus both encoders. **Render to a `Bitmap`, never straight to bytes** |
-| `core/src/viewport.ts` | the 24-column window, with `alive()` applied **at the window**: masking a wide bitmap draws a hole that travels with the glyph |
+| `core/src/viewport.ts` | the 24-column window, with `alive()` applied **at the window**: masking a wide bitmap draws a hole that travels with the glyph. Also `LoopModel`: a saved scroll has two loops, `'uploaded'` and the panel's 24-longer one |
+| `core/src/playlist.ts` | 2-10 items cycled with no flash per press: statics live, all scrollers packed into one type 1 reel. `Cycler` tracks type 1 residency **itself**, which since track 32 is so a press can be priced before it happens and so a revisit builds nothing at all: the budget's duplicate check is per store now, and no longer re-erases a reel because a drawing went out after it. `notes/playlist.md` |
 | `core/src/effects.ts` | wide seamless loops, computed in float and uploaded once. `fieldGap()` is the closure check with teeth; `seam()` cannot prove a loop closes |
-| `core/src/font.ts` | two fonts. `band5` scrolls, `tall7` is static only because it steps glyphs around the notch |
+| `core/src/motifs.ts` | named pictures drawn by arithmetic, not pasted arrays: `ww` (a W per lens, Jacob's Waluigi costume), moustache, zigzag, cap badge, and one wide `wLoop` for the device to scroll. Strokes from named vertices, so a glyph re-scales and follows the geometry constants. All inside rows 2-7, the band alive in every column |
+| `core/src/font.ts` | four faces. `band5` (default), `band6` and `slim5` scroll; `tall7` is static only because it steps glyphs around the notch. **Six rows is the ceiling for anything that moves** and `DEFAULT_FONT` decides how every stored text item renders, so faces are added beside it, never over it. `fonts/fit.ts` is the registry a picker reads plus the free-or-flash boundary per font, which moves when the font does |
 | `core/src/sender.ts` | `LiveSender`: a desired grid and a believed-sent grid, never a queue of writes. Get one from `Glasses.live()`, never by constructing it, and never interleave `Glasses.show()` |
 | `core/src/rhythm.ts` | all 24 columns in one write, bars only. Leave DIY first or the same frame corrupts a column. `research/rhythm-channel.md` |
 | `core/src/protocol.ts` | frames. Several helpers build frames the firmware **ignores**, grouped and labelled in the file: never build a UI control on one |
-| `app/src/draw/` | the draw canvas, wired into `App.tsx`. Writes no flash and sends no `MODE` |
+| `app/src/draw/` | the pad and the canvas arithmetic. The screen over them is `screens/create/DrawPanel.tsx`, which draws offline and mirrors to the panel when connected. Writes no flash and sends no `MODE` |
+| `app/src/one-tap.ts` | **the redesign's centre**: `planTap` routes any showable (built-in one command; still content live and clipped, never refused; resident scroller a free `MODE` return; everything else the one flash save behind a sheet) and `runTap` executes exactly the plan shown. The only screen route to the wire; `App.tsx.tap()` is its one caller |
+| `app/src/panel-session.ts` | the ONE `LiveSender` a connection is allowed, owned above every screen. `live()` is safe to race; `dropped()` after anything that takes the panel (`MODE`, `ANIM`, `IMAG`), because a taken buffer must be forgotten, never repaired |
+| `app/src/settings.ts` | what persists between sittings: brightness/speed/direction defaults (applied on connect), per-pair theme colours and the remembered pair for auto-reconnect, keyed on the advert name like the ledger. `theme.ts` is the palette (eleven entries: ten hues plus a neutral, ordered round the wheel) and the context |
+| `app/src/ble-words.ts` | ble-plx's failures said in the name on the screen. **A platform handle must never reach a person**: it is a MAC on Android and a per-install UUID on iOS, and nothing else in the app is keyed on it. `pairWords(e, name)` is the only wording of a caught BLE error, and the name comes from `App.tsx`'s `pairName` or the row the tap was on |
+| `app/src/proximity.ts` | the Scan count of pairs nearby, from adverts only: it holds `scan`/`stop` and cannot connect. A missing RSSI arrives as `0` or `127`, which is **stronger** than any real reading, so use `signalText`/`bandOf` rather than the number |
+| `app/src/builtins.ts` | the 11 built-in pictures and 19 built-in animations, with a real thumbnail each, lifted from the firmware image offline by `research/tools/bankdump.ts` (`bun run bankdump list\|sheet\|check`) into generated `builtins-data.ts`. `commandFor()` is the only place the addressing lives: `IMAG n` is frame n of one bank, `ANIM n` is mode n + 5, and **that mapping is *derived* and disagrees with what the vendor app sends** (`research/firmware-internals.md`, "`IMAG n` is mode 25"). Showing one writes no flash but takes the panel from the DIY buffer and any resident type 2 image, which is what `TAKES_THE_PANEL` says (*corrected 2026-08-12: this said `screens/Library.tsx` asks before, and it no longer does. Jacob's confirmations ruling took the question off the screen, `builtins.test.ts` now asserts the screen never names that sentence, and nothing imports it*) |
+| `app/src/library.ts` | the phone's own saved content: `SavedDrawing`/`SavedText`/`SavedEffect`, **the recipe and never the rendered pixels**, `revive()` the trust boundary, over `library-store.ts` and its own `library.json`. `search()` matches an item's name and a text item's body and **nothing else**: the 30 built-ins are browsed and never searched, because track 20 numbered rather than named them and a name invented off an offline render is a guess a user would then search for and fail to find. `screens/Library.tsx` says that on the empty state instead of looking as though it lost them (`notes/library.md`) |
+| `app/src/reel.ts` | the phone's side of `playlist.ts`: the favourites committed as ONE type 1 save, after which switching between members is `SPEED` + `MODE` and no flash. `planReel` says whether the pair already holds this exact set (free to resume); `reelDriver` routes the live half through `PanelSession`, never `Glasses.show`, because the app is allowed exactly one `LiveSender`. The answer to "can we really not have more than one saved slot?" |
+| `app/src/deliver.ts` | the three ways content reaches the panel and what each costs, as `costOf()` sentences the UI prints verbatim. `showNow` is free; `deliver()` type 1 is the app's only flash write; type 2 keeps the grey and gets **no `MODE`**, because `MODE` is what discards it. Grey is a costed choice (`greyChoice`), never a bare refusal, and `SaveOpts.cancel` makes an upload free to abandon right up to `DATCP`. **`MODE` goes out only on `SaveResult.committed` or a skip**: `status: 'saved'` means the erases were spent, not that the device took it. The `SPEED` ladder is `protocol.speedDivisor`, not the app's |
+| `app/src/effects-ui/` | the phone's side of `core/src/effects.ts`: `catalogue.ts` is which knobs a thumb gets per generator, `plan.ts` prices and checks one loop. **Rendered at 2 levels always**, and not as a preference: a wide loop with grey in it is either a type 2 the device shows 24 columns of or a flatten that lights every dim pixel, and the flatten is the silent default, so there is no levels control (`plan.MONO_NOTE` is that sentence, on the screen, added by review 13 because it existed only in docblocks). `plan.problems` refuses exactly one thing core does not, a loop with **nothing lit**: `offered.test.ts` walks all 1332 combinations the buttons reach and one of them rendered 736 dark columns under an enabled button. The screen is `screens/create/Effect.tsx` since the redesign: no width control and, since track 28, **no `WIDTHS` ladder to import back** - a loop with no width named renders at `fx.MAX_COLUMNS` (`notes/library.md` "Width is not a question worth asking"; the widths still walked in the tests are the ones a stored recipe can carry), a free Still option through the live buffer, and **no session at all** - it plans and the shell runs - which `wiring.test.ts` holds it to |
+| `app/App.tsx` | **rewritten 2026-08-12, track 26**: three tabs (Show, the library front door; Create, Message/Draw/Effect; Glasses, scan/auto-reconnect/per-pair dashboard). Owns the one connection, the one `PanelSession`, `live` (unsaved panel work), `resident` (the pair's last acknowledged type 1 hash), the library items and `tap()`, the sole `runTap` caller. Every screen mounts with nothing connected (review 17's lesson, promoted to the whole app); the tab bar gates on `wire` mid-upload. The accent colour is the connected pair's theme |
 
 **What has actually run on hardware.** The save path has: track 5's `bun run
 packages/cli/src/type2.ts` drove `Glasses` on 2026-08-09, after the transport
@@ -92,7 +111,9 @@ still unwitnessed.
   no error, which reads as corruption
 - Write-without-response has no flow control: pace the writes or columns go stale. One
   frame costs 6.42ms on the module's UART, so streamed full frames sweep visibly; use
-  DATS for clean motion
+  DATS for clean motion. **The pacing floor is measured now**: 6ms dropped nothing on
+  2026-08-12 (12 columns of 12, by eye), and `protocol.PACING_MS` is 10, keeping headroom
+  because BLE negotiates its interval per connection and a dropped column is silent
 - **Only DATS type 1 persists**, and `savedType()` picks the type from whether the
   content has grey in it, so **one grey pixel decides whether a save lasts**. Type 1
   holds 740 columns; type 2 is accepted to 383 and displays 24
@@ -105,11 +126,20 @@ still unwitnessed.
   atomic clear, undocumented and never sent by the vendor app
 - `CHAR_BULK_A`/`_B` are not interchangeable: A is the DATS stream, B is live
 - BLE is one connection per device, but one phone can hold several devices
+- **The device appends ~24 blank columns to a scrolling type 1 save, so the panel's
+  loop is 24 columns longer than the bitmap.** A preview that walks the bitmap alone
+  shows no gap where the panel shows a full screen of it: that was a real bug, fixed in
+  `app/src/Preview.tsx` by walking `viewport.frames(..., { loop: 'panel' })`. A client
+  gap **adds** to the device's, which is why `content.SCROLL_GAP` is 0: it is what
+  yields the one screen width, and 24 yields two. Measured off the app's wire log plus
+  one look at the panel; whether the 24 survives without a restore from flash is the
+  open half: `research/loop-gap-2026-08-10.md`
 
 **What is still unproven, and the order to settle it in**: the seven-item list in
-`notes/app-plan.md`, "Verify before building". The two *derived* claims the code already
-leans on are `CLRL` clearing the panel, and type 2 showing only its first 24 columns
-(one null observation by eye).
+`notes/app-plan.md`, "Verify before building". The three *derived* claims the code already
+leans on are **the DATS row mapping**, which every rendered pixel sits on (verify item 1),
+`CLRL` clearing the panel, and type 2 showing only its first 24 columns (one null
+observation by eye).
 
 ## Our firmware: built, not yet flashed
 
@@ -122,7 +152,8 @@ answer with silence.
 
 `bun run flash` is the way on, and its subcommands are the safe procedure in order:
 `info` writes nothing, `stage` streams but never commits, `commit --yes` is the one
-barred below. Design and the first-flash procedure: `notes/firmware-design.md`. Wire
+barred below and `flash.ts` refuses it outright without `--ldrom-verified`, which nobody
+can honestly pass until LDROM has been dumped. Design and the first-flash procedure: `notes/firmware-design.md`. Wire
 formats: `core/src/jgx.ts`, `core/src/dfu.ts`. Assembler: `research/tools/thumb.ts`.
 The crew key is `firmware/crew-key.json`, generated on first build and gitignored.
 

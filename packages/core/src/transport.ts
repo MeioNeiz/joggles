@@ -22,6 +22,12 @@ export interface Discovered {
   id: string
   /** Advert name, which picks the cipher before the connection is open. */
   name: string
+  /**
+   * dBm, and **anything at or above 0 means no reading**: this is a plain number so an
+   * absent measurement cannot be absent, and both adapters have a case with none in it
+   * (ble-plx reports `null`, Android reports `127`). Taken as dBm either one outranks a
+   * pair in your hand. `app/src/proximity.ts` holds the filter that refuses them.
+   */
   rssi: number
 }
 

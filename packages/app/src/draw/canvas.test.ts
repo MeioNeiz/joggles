@@ -179,6 +179,33 @@ test('load replaces the canvas, refuses holes, and says whether anything changed
   expect(c.load(stored([[4, 6, 3]]))).toBe(false)
 })
 
+test('every hole is refused by load, at every level', () => {
+  // `revive()` cannot catch these: the shape and the levels are both legal, so a
+  // hand-edited file reaches `load` and this is the last refusal before the wire.
+  // The whole mask rather than the one notch pixel, because the top-row gap and the
+  // bridge row are three different runs of columns.
+  for (let row = 0; row < display.ROWS; row++) {
+    for (let col = 0; col < display.COLS; col++) {
+      if (display.alive(row, col)) continue
+      for (const level of [1, 2, 3]) {
+        const c = new Canvas()
+        expect(c.load(stored([[row, col, level]])), `${row},${col} at ${level}`).toBe(false)
+        expect(c.empty, `${row},${col} at ${level} lit a hole`).toBe(true)
+      }
+    }
+  }
+})
+
+test('a drawing that differs only in brightness is a change', () => {
+  // `load` answers by comparing column words, and a word carries two bits per pixel,
+  // so it can tell 1 from 3. If it could not, loading a drawing over one with the
+  // same pixels lit would silently leave the old greys on the panel.
+  const c = new Canvas()
+  c.load(stored([[4, 6, display.PIXEL_ON]]))
+  expect(c.load(stored([[4, 6, display.PIXEL_DIM]]))).toBe(true)
+  expect(c.levels()[4][6]).toBe(display.PIXEL_DIM)
+})
+
 test('load ends the stroke, so the next drag does not draw a line into the drawing', () => {
   const c = new Canvas()
   c.drag({ row: 5, col: 2 }, 3)

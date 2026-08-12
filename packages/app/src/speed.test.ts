@@ -4,9 +4,20 @@
  * These are a transcription check. The ladder was disassembled by hand from
  * `abs 0x183da`, and the one thing that would make the preview a liar rather than a
  * simulation is getting a bucket boundary or the direction wrong.
+ *
+ * The ladder now lives in `core/src/protocol.ts` and the assertions run through the
+ * app's re-export, which is what the screens import: a move that left the presets
+ * pointing at a stale copy would pass a test aimed straight at core.
  */
+import { protocol as p } from '@joggles/core'
 import { expect, test } from 'bun:test'
 import { PRESETS, columnsPerSecond, divisor, msPerColumn } from './speed.js'
+
+test('the app re-exports core\'s ladder rather than a second copy of it', () => {
+  expect(divisor).toBe(p.speedDivisor)
+  expect(msPerColumn).toBe(p.msPerColumn)
+  expect(columnsPerSecond).toBe(p.columnsPerSecond)
+})
 
 test('the endpoints are the 3.8 and 12.5 columns per second the teardown gives', () => {
   expect(columnsPerSecond(0)).toBeCloseTo(3.8, 1)

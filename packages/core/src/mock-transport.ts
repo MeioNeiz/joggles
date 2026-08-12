@@ -22,7 +22,24 @@ export interface Written {
   plain: Uint8Array
 }
 
-/** ASCII opcode of a plaintext frame, e.g. `DATS`. Empty for a column write. */
+/**
+ * ASCII opcode of a plaintext frame, e.g. `DATS`. Empty for a column write.
+ *
+ * **It takes the leading run of capitals, so any frame whose first argument byte is
+ * 0x41-0x5A is mis-split** and that byte joins the opcode. `SPEED 70` reads back as
+ * `SPEEDF` and `SPEED 85` as `SPEEDU`; the whole of `SPEED` 65 to 90 is affected, and
+ * so is any other numeric argument landing in that range. The general rule is the
+ * point: two notes files each recorded one example and neither said what the rule was.
+ *
+ * So `MockTransport.commands` is wrong for those frames, silently and with a
+ * plausible-looking string. A test that needs to see one should match `to()` on the
+ * command channel against a known opcode list rather than read `commands`, which is
+ * what `playlist.test.ts` and `app/src/deliver.test.ts` do.
+ *
+ * Deliberately not fixed here: existing tests assert against `commands`, so taking the
+ * opcode length from a table of known opcodes is a change to those assertions and
+ * belongs to whoever owns it.
+ */
 export const opcodeOf = (plain: Uint8Array): string =>
   String.fromCharCode(...p.body(plain)).replace(/[^A-Z]+.*$/s, '')
 

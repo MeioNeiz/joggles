@@ -32,6 +32,7 @@
 import { type Bitmap, toGrid } from './content.js'
 import { COLS, Grid, ROWS } from './display.js'
 import * as p from './protocol.js'
+import { PACING_MS } from './protocol.js'
 import type { Transport } from './transport.js'
 
 const timer = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
@@ -44,9 +45,11 @@ function columnFrame(grid: Grid, c: number): Uint8Array {
 
 export interface SenderOptions {
   /**
-   * Delay between column writes. 18ms matches `Glasses`; the hardware floor is
-   * ~6.5ms, one frame on the display module's UART, and below it the controller
-   * starts dropping writes.
+   * Delay between column writes, defaulting to `protocol.PACING_MS`.
+   *
+   * *Corrected 2026-08-12 by the sitting: this said the floor was ~6.5 ms and that
+   * below it the controller starts dropping writes. The first half is right and the
+   * second was never tested. 6 ms dropped nothing, twelve columns of twelve.*
    */
   pacing?: number
   /**
@@ -141,7 +144,10 @@ export class LiveSender {
     private transport: Transport,
     opts: SenderOptions = {},
   ) {
-    this.pacing = opts.pacing ?? 18
+    // `session.PACING_MS`, measured on the panel 2026-08-12 and carrying its own
+    // reasoning there. Imported rather than repeated, because two copies of a timing
+    // constant is how one of them stays at a number nobody has checked.
+    this.pacing = opts.pacing ?? PACING_MS
     this.cipher = opts.cipher ?? p.vendor
     this.nap = opts.sleep ?? timer
     this.onError = opts.onError

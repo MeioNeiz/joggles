@@ -8,12 +8,15 @@
 import { expect, test } from 'bun:test'
 import {
   BudgetError,
+  FLASH_TYPE,
   FlashBudget,
   LIMITS,
   counts,
   emptyLedger,
   fingerprint,
+  holds,
   memoryStore,
+  storedHash,
 } from './budget.js'
 
 const DEVICE = 'GLASSES-12C3EF'
@@ -59,6 +62,85 @@ test('a save the device rejected is not "already on the glasses"', async () => {
   advance(60_000)
   // The content is not there, so retrying it is legitimate and must not be skipped.
   expect(await budget.allow(DEVICE, A)).toBe(true)
+})
+
+// --- which store, and what it is holding ---
+
+/**
+ * The device has two stores and a record now says which one it hit.
+ *
+ * Both directions of this were wrong before, and both cost something real. A type 2
+ * save from the drawing screen made a resident scroller look like new content, so the
+ * next tap on it spent five page erases putting back what was already there; and a
+ * failed commit was walked straight past to an older matching record, so a retry of
+ * the content that commit destroyed was skipped as a duplicate and never went out.
+ */
+const savedAs = async (b: FlashBudget, hash: string, type: number, ok = true) =>
+  b.count(DEVICE, { hash, columns: 24, ok, type })
+
+test('a type 2 save leaves the flash store exactly where it was', async () => {
+  const { budget, advance } = budgetAt()
+  await savedAs(budget, A, 1)
+  advance(60_000)
+  await savedAs(budget, B, 2)
+  advance(60_000)
+
+  expect(storedHash(await budget.ledger(DEVICE), 1)).toBe(A)
+  expect(await budget.allow(DEVICE, A, { type: 1 })).toBe(false)
+  // And the other way round: a type 2 image does not survive a later save of any
+  // type, so the RAM store stops being knowable the moment the reel goes over it.
+  expect(storedHash(await budget.ledger(DEVICE), 2)).toBe(B)
+  await savedAs(budget, A, 1)
+  advance(60_000)
+  expect(storedHash(await budget.ledger(DEVICE), 2)).toBeNull()
+  expect(await budget.allow(DEVICE, B, { type: 2 })).toBe(true)
+})
+
+test('a failed commit is where the walk stops, in both stores', async () => {
+  const { budget, advance } = budgetAt()
+  await savedAs(budget, A, 1)
+  advance(60_000)
+  await savedAs(budget, B, 1, false)
+  advance(60_000)
+
+  // The erases were spent, so whatever is in the flash store now, it is not A.
+  expect(storedHash(await budget.ledger(DEVICE), 1)).toBeNull()
+  expect(await budget.allow(DEVICE, A, { type: 1 })).toBe(true)
+})
+
+test('a record with no type is unknown to name, and still sound to compare', async () => {
+  const { budget, advance } = budgetAt()
+  // What every ledger on disk looked like before 2026-08-12.
+  await saved(budget, A)
+  advance(60_000)
+
+  // Nobody can say which store it hit, so nothing may claim it as residency.
+  expect(storedHash(await budget.ledger(DEVICE), 1)).toBeNull()
+  expect(storedHash(await budget.ledger(DEVICE), 2)).toBeNull()
+  // But the duplicate check still holds, and that is not a contradiction: the hash
+  // carries the type (`fingerprint` mixes it in), so a record matching this payload
+  // could only have been a save of this type. Old ledgers keep their protection.
+  expect(holds(await budget.ledger(DEVICE), 1, A)).toBe(true)
+  expect(await budget.allow(DEVICE, A, { type: 1 })).toBe(false)
+
+  // Under a typed one it is still the last word, because it may itself have been a
+  // type 1 save and there is no longer any way to ask.
+  await savedAs(budget, B, 1)
+  advance(60_000)
+  await saved(budget, 'hash-c')
+  advance(60_000)
+  expect(storedHash(await budget.ledger(DEVICE), 1)).toBeNull()
+  expect(await budget.allow(DEVICE, B, { type: 1 })).toBe(true)
+})
+
+test('a caller that does not name a store is asking about the flash one', async () => {
+  const { budget, advance } = budgetAt()
+  await savedAs(budget, A, 2)
+  advance(60_000)
+  // Type 1 by default, which is what every caller written before the field meant and
+  // what `session.save()` defaults to. A type 2 record cannot answer for it.
+  expect(await budget.allow(DEVICE, A)).toBe(true)
+  expect(FLASH_TYPE).toBe(1)
 })
 
 test('two saves inside the interval: the second throws and nothing queues', async () => {

@@ -139,6 +139,9 @@ const PAIRS: Record<string, number> = {}
 
 export const BAND5: Font = {
   name: 'band5',
+  label: 'Standard',
+  note: 'mixed case, one row of air above the caps',
+  scrolls: true,
   height: 5,
   baseline: 2,
   spacing: 1,

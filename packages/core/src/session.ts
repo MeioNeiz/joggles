@@ -31,8 +31,17 @@ export const sleep = (ms: number): Promise<void> =>
  */
 const SAVED_TYPE = 1
 
+
+/** Re-exported so `Glasses` callers need not reach into `protocol`. */
+export const PACING_MS = p.PACING_MS
+
 export interface SessionOptions {
-  /** Delay between column writes. Below ~12ms the panel starts dropping them. */
+  /**
+   * Delay between column writes, defaulting to `PACING_MS`.
+   *
+   * *Corrected 2026-08-12: this said "below ~12ms the panel starts dropping them",
+   * which was a guess dressed as a measurement. 6 ms drops nothing.*
+   */
   pacing?: number
   /**
    * Cipher for this connection. Stock units hold the vendor key forever, because
@@ -74,13 +83,71 @@ export interface SaveOpts extends SaveOptions {
    * switches to the type 1 flash store with no way back.
    */
   type?: number
+  /**
+   * Asked before every block and once more before `DATCP`. True abandons the upload.
+   *
+   * **A cancelled upload costs nothing**, which is the whole reason this exists: the
+   * five page erases are inside the `DATCP` arm at `abs 0x218cc`, and everything
+   * before it lands in the 1536-byte SRAM staging buffer. So the answer to "can I
+   * stop this?" is yes right up to the last write, and a UI can say so honestly.
+   *
+   * It leaves the device mid-handshake, waiting for a `DATCP` that never comes.
+   * Nothing is sent to tidy that up on purpose: the next `DATS` zeroes the buffer and
+   * resets the counter (*derived*, `abs 0x18314`), where a `DATCP` sent to close the
+   * handshake would commit a truncated payload over content the user had already
+   * saved. `end()` strands a handshake the same way for the same reason. **Nobody has
+   * sent a fresh `DATS` after an abandoned one on hardware**, so what the firmware
+   * makes of it is read off the disassembly rather than witnessed.
+   *
+   * The result reads `refused`, because the meaning a caller acts on - the device
+   * never acknowledged a commit, so no flash moved - is the same. The budget's
+   * three-second interval has already been spent by then, deliberately: `allow()`
+   * runs before the first block, and a cancel that restored the allowance would let a
+   * loop cancel its way out of the rate limit.
+   */
+  cancel?: () => boolean
+  /**
+   * How far the upload has got: blocks written, against blocks in the payload.
+   *
+   * Called once with `(0, total)` the moment `DATSOK` comes back and the stream is
+   * about to start, then after every block. Not called for `DATCP`, which is not a
+   * block: it is where the flash time goes and it is the one part of the handshake
+   * nothing here can see inside, so a bar that reached the end and then waited would
+   * be honest and a bar that reported `DATCP` as a block would not.
+   *
+   * **Report only.** A throw from here is caught and dropped, where a throw from
+   * `cancel` deliberately is not: cancelling is a decision whose worst outcome is
+   * spending nothing, while a progress bar that threw mid-stream would abandon a save
+   * that was going to succeed and strand the device waiting for a commit. Nothing
+   * cosmetic gets to change what the glasses end up holding.
+   *
+   * `total` is 0 for an empty payload. `content.check()` refuses those long before
+   * here, but arithmetic on the other side still has to survive one.
+   */
+  progress?: (sent: number, total: number) => void
 }
 
 export interface SaveResult {
-  /** `refused` means the device never acknowledged, so no flash was touched. */
+  /**
+   * `refused` means no `DATCP` was acknowledged, so no flash was touched: either the
+   * device declined the `DATS`, or `SaveOpts.cancel` abandoned the upload.
+   *
+   * **`saved` means the erases were spent, not that the content is there.** That is
+   * deliberate and it is what the wear count is counted from, so the question "did
+   * the device take it?" is `committed` and never this.
+   */
   status: 'saved' | 'skipped' | 'refused'
   /** The device's own word: `DATCPOK`, `ERROR`, `TIMEOUT`, or why nothing was sent. */
   reply: string
+  /**
+   * The device acknowledged the commit, so it really is holding this content.
+   *
+   * `reply === 'DATCPOK'`, named once here rather than spelled out by every caller:
+   * six places were comparing that literal, and one of them (`deliver()`) got it
+   * wrong by not comparing it at all. False for `skipped`, which is a claim about
+   * what the device already held rather than about a commit that happened.
+   */
+  committed: boolean
   /** Lifetime saves counted against this device, this one included. */
   saves: number
 }
@@ -114,7 +181,7 @@ export class Glasses {
     name: string,
     opts: SessionOptions = {},
   ): Promise<Glasses> {
-    const { pacing = 18, cipher: pick = p.vendor } = opts
+    const { pacing = PACING_MS, cipher: pick = p.vendor } = opts
     const cipher = typeof pick === 'function' ? pick(name) : pick
     const g = new Glasses(
       transport,
@@ -202,15 +269,34 @@ export class Glasses {
    * derived ceiling to find out whether it is real.
    */
   async save(bitmap: number[][], opts: SaveOpts = {}): Promise<SaveResult> {
-    const { blockSleep = 50, type = SAVED_TYPE } = opts
+    const { blockSleep = PACING_MS, type = SAVED_TYPE, cancel, progress } = opts
+    const abandoned = async (): Promise<SaveResult> => ({
+      status: 'refused',
+      reply: 'cancelled before DATCP, so no flash was written',
+      committed: false,
+      saves: (await this.budget.ledger(this.device)).lifetime,
+    })
+    // Never lets a bar take the save down with it. See `SaveOpts.progress`.
+    const report = (sent: number, total: number): void => {
+      try {
+        progress?.(sent, total)
+      } catch {}
+    }
     const payload =
       type === dats.TYPE_IMAGE ? dats.encodeImage(bitmap) : dats.encodeBitmap(bitmap)
     const columns = bitmap[0]?.length ?? 0
     const hash = fingerprint(payload, type)
 
-    if (!(await this.budget.allow(this.device, hash, opts))) {
+    // The resolved type, not `opts`: the default lives here, and the guard comparing
+    // against the wrong store would skip a save the device does not hold.
+    if (!(await this.budget.allow(this.device, hash, { ...opts, type }))) {
       const { lifetime } = await this.budget.ledger(this.device)
-      return { status: 'skipped', reply: 'already on the glasses', saves: lifetime }
+      return {
+        status: 'skipped',
+        reply: 'already on the glasses',
+        committed: false,
+        saves: lifetime,
+      }
     }
 
     const ack = this.waitReply()
@@ -220,6 +306,7 @@ export class Glasses {
       return {
         status: 'refused',
         reply: `DATS not acknowledged: ${started}`,
+        committed: false,
         saves: (await this.budget.ledger(this.device)).lifetime,
       }
     }
@@ -230,22 +317,34 @@ export class Glasses {
     // disappearing. Length is checked at the device (DATCP compares a running counter
     // against what DATS predicted, abs 0x182e0), but content is not: dropped blocks
     // still answer DATCPOK, so pacing too hard corrupts silently.
-    for (const block of dats.chunkPayload(payload)) {
+    const blocks = dats.chunkPayload(payload)
+    report(0, blocks.length)
+    for (const [i, block] of blocks.entries()) {
+      if (cancel?.()) return abandoned()
       await this.send(p.CHAR_BULK_A, block, false)
+      report(i + 1, blocks.length)
       if (blockSleep > 0) await sleep(blockSleep)
     }
+    // Asked again with the last block already out: at the default 50ms pacing the
+    // stream is most of the ~6s, and a tap that lands during the final gap must not
+    // spend the erases it was trying to avoid.
+    if (cancel?.()) return abandoned()
 
     const done = this.waitReply()
     await this.send(p.CHAR_COMMAND, dats.datsComplete(), false)
     const reply = await done
+    const committed = reply === 'DATCPOK'
     // Counted whatever came back: the erases happen at the device's end, so a
-    // rejected save has still spent them.
+    // rejected save has still spent them. The type goes in with it because the
+    // ledger is also what says which store is holding what, and a record that cannot
+    // name its store reads as unknown for ever after (`budget.SaveRecord.type`).
     const ledger = await this.budget.count(this.device, {
       hash,
       columns,
-      ok: reply === 'DATCPOK',
+      ok: committed,
+      type,
     })
-    return { status: 'saved', reply, saves: ledger.lifetime }
+    return { status: 'saved', reply, committed, saves: ledger.lifetime }
   }
 
   /** Lifetime and rolling counts for this unit. The only wear number we can have. */

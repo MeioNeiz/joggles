@@ -1,18 +1,37 @@
 /**
- * Text on the panel: two fonts, one layout engine, and the placement rules that
+ * Text on the panel: four faces, one layout engine, and the placement rules that
  * keep glyphs off the dead LEDs.
  *
- * The panel is 9 rows and only rows 2 to 7 have an LED in every column, which is
- * what splits this into two fonts rather than one:
+ * The panel is 9 rows and only rows 2 to 7 have an LED in every column. That one
+ * fact splits every font here into two kinds:
  *
- *     band5   5 rows at baseline 2   scrolling, and anything that moves
+ *     band5   5 rows at baseline 2   scrolling. One row of air above the caps
+ *     band6   6 rows at baseline 2   scrolling. The whole band, x-height of 4
+ *     slim5   5 rows at baseline 2   scrolling. Condensed, more free columns
  *     tall7   7 rows at baseline 1   static only, placed around the notch
  *
- * `panelBitmap` is the scrolling one and it is what `content.text` uses. It
+ * **Six rows is the ceiling for anything that moves, and the rows above and
+ * below are the notch rather than waste.** Scrolling content visits every
+ * column, so a glyph outside rows 2 to 7 loses a stroke for the four to six
+ * columns it spends crossing the nose bridge and reads as a different letter.
+ * There is no 9-row scrolling font to be had, however much of the panel looks
+ * unused; height beyond the band is available to *static* text only, which is
+ * what `tall7` is. `fonts/band6.ts` carries the long form of that argument, and
+ * `band5` spending its sixth row on air is a legibility choice rather than an
+ * oversight (`fonts/band5.ts`).
+ *
+ * **`DEFAULT_FONT` is `band5` and changing it changes old content.** Every text
+ * item in every library is stored as a string, and one saved before fonts were
+ * pickable has no face recorded, so it renders in whatever this points at. New
+ * faces are therefore added *beside* it and none of them is a replacement.
+ * `fit.fontByName(undefined)` is the read path for those older items and answers
+ * `LEGACY_FONT`, which is pinned to `band5` and does not follow this.
+ *
+ * `panelBitmap` is the scrolling path and it is what `content.text` uses. It
  * keeps every glyph inside the safe band at every column, so a message can be
- * uploaded once and scrolled unattended without a stroke blinking out as it
- * crosses the nose bridge. `staticText` is the tall one and it moves glyphs
- * sideways instead, which only works because nothing moves afterwards.
+ * uploaded once and scrolled unattended. `staticText` is the tall one and it
+ * moves glyphs sideways instead, which only works because nothing moves
+ * afterwards.
  *
  * **`textWidth` and `textBitmap` are the same layout.** Both go through
  * `kern.pieces`, so a caller that measures and then renders cannot be told two
@@ -20,7 +39,8 @@
  * That mattered once kerning arrived, because the gap between two glyphs is now
  * a property of the pair rather than a constant.
  *
- * Glyph tables and the kerning arithmetic: `fonts/`.
+ * Which face to offer, and where the free-or-flash line falls in each of them:
+ * `fonts/fit.ts`. Glyph tables and the kerning arithmetic: `fonts/`.
  */
 import { ROWS } from './display.js'
 import { BAND5 } from './fonts/band5.js'
@@ -29,17 +49,40 @@ import { type StaticOptions, staticText } from './fonts/place.js'
 import type { Font } from './fonts/types.js'
 
 export { BAND5 } from './fonts/band5.js'
+export { BAND6 } from './fonts/band6.js'
+export { SLIM5 } from './fonts/slim5.js'
 export { TALL7 } from './fonts/tall7.js'
 export { staticText, widestGlyph } from './fonts/place.js'
 export type { StaticOptions, StaticPlacement } from './fonts/place.js'
 export type { Font } from './fonts/types.js'
+export {
+  FONTS,
+  FREE_COLUMNS,
+  LEGACY_FONT,
+  bestFree,
+  fit,
+  fitAll,
+  fontByName,
+} from './fonts/fit.js'
+export type { Fit } from './fonts/fit.js'
 export { kern }
 
-/** Panel row the scrolling font sits on, and how tall it is. */
+/**
+ * Where `band5` sits and how tall it is, kept because every CLI script and the
+ * live `Grid` path was written against these two numbers. They are that font's
+ * metrics, not every font's: anything handling a chosen face should read
+ * `font.baseline` and `font.height` off the `Font`, which is what `panelBitmap`
+ * does.
+ */
 export const BASELINE = 2
 export const HEIGHT = 5
 
-/** What everything here uses unless told otherwise. */
+/**
+ * What everything here uses unless told otherwise.
+ *
+ * Pinned to `band5` for the reason in this file's head: it is what every stored
+ * text item that names no font already renders in.
+ */
 export const DEFAULT_FONT = BAND5
 
 /**
@@ -129,3 +172,22 @@ export function panelBitmap(text: string, opts: Options = {}, baseline?: number)
  */
 export const staticBitmap = (text: string, opts: StaticOptions = {}): number[][] =>
   staticText(text, opts).bitmap
+
+/**
+ * Text in whichever face was chosen, drawn the only way that face can be drawn.
+ *
+ * **The trap this closes.** `panelBitmap` sits a glyph on the font's baseline
+ * and draws it, which is right for the three scrolling faces and wrong for
+ * `tall7`: its baseline is panel row 1, where the nose notch has no LEDs, so the
+ * direct call puts strokes on dead pixels and the letters come back missing
+ * pieces. A static face has to go through `staticText`, which steps whole glyphs
+ * past the holes. Anything holding a `Font` a person picked should call this
+ * rather than choosing between the two itself.
+ *
+ * Nine rows either way, and as wide as the text needs for a scrolling face or
+ * exactly 24 for a static one. **It does not report drops**: a static placement
+ * can leave characters out, and `fit.fit(text, font).dropped` is what says so.
+ */
+export function panelFor(text: string, font: Font = DEFAULT_FONT): number[][] {
+  return font.scrolls ? panelBitmap(text, { font }) : staticText(text, { font }).bitmap
+}

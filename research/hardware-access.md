@@ -1,20 +1,26 @@
 # Physical access: SWD, pads, probes
 
-**Status:** not needed for firmware work. `research/firmware-flashing.md` establishes
-that app images can be flashed over BLE with the running application never at risk.
-This document exists as insurance and for the two things OTA genuinely cannot do:
-dump the BLE stack and the bootloader, and revive a unit whose application no longer
-brings up BLE.
+**Status: this is the delivery route for firmware, not insurance.** OTA staging is safe;
+committing is barred until LDROM has been dumped (`research/brick-2026-08-08.md`), so SWD
+is the only way `firmware/joggles-v1.bin` reaches a device at all, and the only way to
+repair the bricked `GLASSES-12C3EF`. It is also still the only route to the two things OTA
+could never do: dump the BLE stack and the bootloader, and revive a unit whose application
+no longer brings up BLE.
 **Scope:** what is on the board, where the debug pads are, what to buy, how to dump,
 how to restore.
 **Cost:** about £12 for a probe. Everything else is a multimeter and patience.
+
+*Corrected: the status above said SWD was "not needed for firmware work" and that this
+document "exists as insurance", on the strength of `research/firmware-flashing.md` showing
+that BLE flashing never risks the running application. Staging never did; the commit
+handoff bricked a unit on 2026-08-08. The position is now the reverse of what was written.*
 
 ## Verdict
 
 | Question | Answer | Confidence |
 | --- | --- | --- |
 | Is there a usable debug port? | yes, standard ARM SW-DP over SWD | derived |
-| Are the pads broken out, or must we probe the QFN? | broken out, five labelled pads | derived from FCC photos |
+| Are the pads broken out, or must we probe the QFN? | broken out, five labelled pads | *verified* on our board, 2026-08-08 |
 | Can we dump 256 KB without vendor tooling? | yes, reads need no flash algorithm | verified from the architecture |
 | Can we write flash back without vendor tooling? | yes, but it needs work, see "Restoring" | derived |
 | Can the debug port be locked against us? | possibly, and it is testable in one command | unverified |
@@ -53,7 +59,7 @@ now rested entirely on the firmware sending 74-byte frames at a UART. *derived*:
 package and position fit, the marking has not been read.
 
 **`V+ G K VD` is not the debug header.** Four pads, and the labels read as power rather
-than debug. The SWD header is five pads, `RST CLK DAT G VD`, and it is **not on the
+than debug. The SWD header is five pads, `RST EK ED G VD`, and it is **not on the
 component side**: a full photograph of that face shows only the group above, `ANT1`, the
 JST connector and two wired pads at the far end. It is on the **LED side**, which is
 where FCC Fig. 5 shows it, among the LED packages.
@@ -89,6 +95,12 @@ them if nothing answers.
 **`VD` is the only pin that must never take a wire.** It is the 3.3 V rail, so probe
 ground on it shorts the regulator through the LDO. Ground landing on any *signal* pad
 merely pulls it low and costs nothing. So the whole safety rule is: **stay off `VD`**.
+
+**Check the alignment before powering the glasses: the clip is 6 pins against 5 pads, so
+it can sit one position out, and slipping one way puts the probe's `GND` on `VD`**, which
+shorts the 3.3 V rail to ground through the LDO. Every other misalignment merely fails to
+connect and is harmless, so this is the single misplacement that damages hardware. Clip
+on, eyeball pin 1 against `RST`, then switch on.
 
 **Ground at position 4 is also why a 3-way connector cannot be used directly.** The
 probe's order is `SC`, `GND`, `SD`, i.e. ground in the middle, so a rigid block would
@@ -128,7 +140,10 @@ existence is in FCC filings by Shenzhen Shining Bright Technology, [fccid.io/2AO
 | `2AOLNSL-012` | Shining Glasses, 2021 | sibling, and its debug header is the legible one |
 | `2AOLN-16` | Shining Mask | different, two-chip architecture. Do not transfer its findings |
 
-On the `SL-004` board. *derived* from the photographs; our own unit has not been opened.
+On the `SL-004` board, *derived* from the photographs. **Superseded by "Our own unit,
+opened" above**, which is the board in hand and outranks every row here; kept as the
+record of what the FCC exhibit actually shows. *This line previously said our own unit
+had not been opened. It was opened on 2026-08-08.*
 
 | Item | Observation |
 | --- | --- |
@@ -148,7 +163,14 @@ upscaled. The Panchip identification rests on firmware and SDK evidence, not a m
 | Board | Order, left to right |
 | --- | --- |
 | `SL-012` (2021) | header marked `DBG1`: `GND`, `RST`, `CLK`, `DAT`, `3V`, with `BLE_ICE` nearby |
-| `SL-004` (ours) | `RST`, `CLK`, `DAT`, `G`, `VD` |
+| `SL-004` (ours) | `RST`, `EK`, `ED`, `C`/`G`, `VD`, read off the board in hand |
+
+*Corrected: the `SL-004` row said `RST`, `CLK`, `DAT`, `G`, `VD`. That was read off a
+low-resolution FCC image and is wrong. Our board is silkscreened `EK` and `ED`, which are
+Panchip's `ICE_CLK` and `ICE_DAT` abbreviated, and pad 4 reads as `C` in photographs but
+`G` in the hand. The old row is the reading that puts a probe on the wrong pad, so the
+board-in-hand reading in "The debug header: 2.54 mm, five through-holes, LED side" is the
+one to wire from.*
 
 ### Read directly off the FCC internal photos
 
@@ -164,13 +186,11 @@ The internal-photos exhibit is 8 figures and fetches as a PDF:
 - **The header sits at the top edge of the board**, beside the antenna cutout, with
   nothing tall around it. Comfortably inside a probe clip's 25 mm reach.
 
-**The pitch is still not measured.** Fig. 5 carries no ruler, and the board-level shots
-that do (Fig. 2, Fig. 3) are too low-resolution to measure a 10 mm span. *derived*, it
-leans 2.54 mm: the board is ~145 mm wide in Fig. 3 and the pad row reads as roughly
-10 mm of it, and legible per-pad silkscreen does not fit beside 1.27 mm holes. Confirm
-on the physical board before buying a clip. Five pads have four gaps, so 2.54 mm spans
-10.2 mm end to end and 1.27 mm spans 5.1 mm; holding the row against any 0.1" header or
-a breadboard is more reliable than a ruler on something this small.
+**The pitch is not measurable from any figure. Superseded: it is 2.54 mm**, *verified*
+2026-08-08 against a USB-A shell, see "The debug header: 2.54 mm, five through-holes, LED
+side" above. Kept as a line rather than deleted because three attempts to scale it from
+these photographs returned 2.3 mm, 1.55 mm and 4.0 mm, and that spread is the lesson: do
+not trust photogrammetry for pitch.
 
 Other figures worth knowing: Fig. 4 is the QFN32 SoC with both crystals, Fig. 5 also
 shows a separate 4-pad group at the left edge (`V+`, `G`, ..., `VD`) for the charger
@@ -188,12 +208,13 @@ about the silicon.
 
 ### Correction to the 26 MHz crystal
 
-`README.md` and `firmware-image-format.md` record a 26 MHz crystal, inferred from the
-constant `0x018cba80` (26,000,000) in the firmware's tail config block. That constant is
-almost certainly the **internal** oscillator and PLL reference: Panchip's SDK sets
-`__HIRC` and `__PLL` to 26 MHz while defining the external `__HXT` as 16 MHz, and the
-FCC photographs show a 16 MHz part. Treat the external crystal as 16 MHz until someone
-reads the marking on our own board. *unverified* either way.
+**Settled: the external crystal is 16 MHz.** `Y1` on our own board is marked
+`16.000MHz`, *verified* 2026-08-08, so the 26 MHz in `README.md` and
+`firmware-image-format.md` is wrong and `0x018cba80` (26,000,000) in the firmware's tail
+config is the internal oscillator and PLL reference, exactly as Panchip's SDK sets
+`__HIRC` and `__PLL` to 26 MHz while defining the external `__HXT` as 16 MHz. *This
+section previously said to treat it as 16 MHz "until someone reads the marking on our own
+board" and marked the whole question `unverified` either way. Somebody read it.*
 
 ## Pin mapping, if the pads turn out not to match
 
@@ -287,7 +308,7 @@ Even the probe's female lead does not solve it, because the pin orders disagree:
 | | Order |
 | --- | --- |
 | Probe's 3-pin connector | `SC` (clock), `GND`, `SD` (data) |
-| Clip pins, mirroring the board | `RST`, `CLK`, `DAT`, `G`, `VD` |
+| Clip pins, mirroring the board | `RST`, `EK`, `ED`, `G`, `VD`, and a 6th that overhangs |
 
 The probe's `GND` must reach the clip's **4th** pin while `SC` and `SD` reach the 2nd and
 3rd. A fixed 3-way housing cannot make that mapping at any rotation.
@@ -339,8 +360,13 @@ Recon first, then the dump:
 Record the DPIDR (expect `0x0bb11477`, the stock Cortex-M0 SW-DP), the CPUID, and the
 part ID at `0x50000000`; that last value is what a flash driver would need later.
 
-Dump three times from cold boot and compare. Then check `mdw 0x00100000` (LDROM) and
-`mdw 0x00300000` (config) and note whether they fault.
+**Take three dumps from cold and compare them before believing any of them.** A flaky rig
+produces repeat reads that disagree, and that failure looks exactly like a device changing
+underneath you, which is the most expensive way to misread a dump. `swd-recon.sh dump
+<out>` each time, then `bun run dumpcheck compare <a> <b> <c>`.
+
+Then check `mdw 0x00100000` (LDROM) and `mdw 0x00300000` (config) and note whether they
+fault.
 
 **Validate the dump against what we already have.** Decode
 `firmware/TR1906R04-10_OTA.bin` and confirm the plaintext appears verbatim at
@@ -440,7 +466,8 @@ firmware" are probably mutually exclusive, so the dump has to come first.
   DPIDR reads correctly but every AP access faults. Some Chinese BLE parts do this,
   Telink most notoriously. If you see it, go looking for an unlock rather than
   resoldering.
-- Whether our unit's board matches the FCC photographs above.
+- ~~Whether our unit's board matches the FCC photographs above.~~ Closed 2026-08-08: it
+  does, except the pad silkscreen, which reads `EK`/`ED` and not `CLK`/`DAT`.
 
 ## Sources
 

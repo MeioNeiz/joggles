@@ -1,2 +1,13 @@
-Advisory locks for the two singleton resources: the glasses and the Pixel.
-Convention and rationale: notes/parallel-tracks.md
+Two kinds of file live here, and only the first kind is a device lock.
+
+- `glasses` and `phone`: advisory locks for the two singleton physical resources. Absent
+  means free. Delete yours as soon as you stop using the hardware.
+- `track-N` and `review-N`: the claim and outcome records for the board. These are not
+  tidy-up candidates. `track-N` existing is what makes a track claimed, `review-N` reading
+  `passed` or `fixed` is what unblocks the tracks that need it, and several rows on the
+  board depend on ones that closed days ago. Numbers are never reused, so deleting one
+  makes a track look unclaimed and attaches its old review to new work.
+
+The board also delegates to these files: it says what a track is, they say where it got
+to, so for several tracks this directory is the only record. Convention and rationale:
+notes/parallel-tracks.md.

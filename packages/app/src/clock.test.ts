@@ -1,19 +1,20 @@
 /**
  * The preview clock, against a display the test drives by hand.
  *
- * Reported twice, and the second report is why these exist. "The preview speeds up
- * and slows down" was a counted `setInterval` surging after a stall; "still not very
- * smooth, slight delays" was what was left once the rate was right - steps landing
- * alternately five and six frames apart, because 90ms is 5.4 frames at 60Hz. Both
- * are questions about *when* a step lands relative to the display, and neither is
- * observable without either a fake clock or a person watching a phone.
+ * Three reports shaped this file. "The preview speeds up and slows down" was a
+ * counted `setInterval` surging after a stall; "still not very smooth" was the
+ * millisecond beat; and 2026-08-12's "way slower than the actual speed ... it seems
+ * to speed up the less pixels are showing" was the frame-counted clock stretching
+ * time under render load, so the rate varied with the content. The current design
+ * answers the third at the cost of the second: wall-clock rate, catch-up by jumping,
+ * and a step may land a frame early or late. These tests pin that trade the way the
+ * old ones pinned the old one.
  */
 import { expect, test } from 'bun:test'
 import { stepClock } from './clock.js'
 
 const INTERVAL = 90
 const HZ60 = 1000 / 60
-const CALIBRATION = 8
 
 /** A display the test advances one frame at a time. */
 function rig(intervalMs = INTERVAL) {
@@ -48,80 +49,75 @@ function rig(intervalMs = INTERVAL) {
     due?.()
   }
 
-  const gaps = () => landedOn.slice(1).map((f, i) => f - landedOn[i])
-
-  return { steps, landedOn, gaps, draw, stop, armed: () => pending !== null }
+  return { steps, landedOn, draw, stop, armed: () => pending !== null }
 }
 
-test('steps land an identical number of frames apart, with no beat', () => {
+test('the rate is the wall clock’s, whatever the display does', () => {
+  // One second of 60Hz frames and one second of 120Hz frames reach the same column:
+  // the rate is elapsed time over the interval, not a count of frames.
+  // The first frame sets the baseline, so one second of motion is 61 and 121 draws.
+  const sixty = rig()
+  for (let i = 0; i < 61; i++) sixty.draw(HZ60)
+  const oneTwenty = rig()
+  for (let i = 0; i < 121; i++) oneTwenty.draw(1000 / 120)
+
+  expect(sixty.steps.at(-1)).toBe(Math.floor(1000 / INTERVAL))
+  expect(oneTwenty.steps.at(-1)).toBe(sixty.steps.at(-1)!)
+})
+
+test('slow frames hold the rate by skipping columns, never by stretching time', () => {
+  // The 2026-08-12 report: heavy renders made the marquee slower, so the speed read
+  // as a property of how much was lit. 50ms frames are a struggling JS thread; a
+  // second of them must still reach the same column as a clean second.
   const r = rig()
-  for (let i = 0; i < 60; i++) r.draw()
+  for (let i = 0; i < 21; i++) r.draw(50)
 
-  expect(r.steps.length).toBeGreaterThan(5)
-  // The whole complaint: 90ms is 5.4 frames at 60Hz, so a millisecond clock
-  // alternates 5 and 6. One distinct gap means the motion is metronomic.
-  expect([...new Set(r.gaps())]).toEqual([5])
+  expect(r.steps.at(-1)).toBe(Math.floor(1000 / INTERVAL))
+  // Fewer reports than steps is the point: the gaps are skipped columns.
+  expect(r.steps.length).toBeLessThanOrEqual(21)
 })
 
-test('the rate is rounded to whole frames of the real refresh', () => {
-  const fast = rig()
-  for (let i = 0; i < 40; i++) fast.draw(HZ60)
-  expect(fast.gaps()[0]).toBe(5) // round(90 / 16.67)
+test('a stall is repaid with one jump, never a burst', () => {
+  const r = rig()
+  for (let i = 0; i < 12; i++) r.draw()
+  const before = r.steps.length
 
-  const smooth = rig()
-  for (let i = 0; i < 60; i++) smooth.draw(1000 / 120)
-  expect(smooth.gaps()[0]).toBe(11) // round(90 / 8.33)
+  // The JS thread goes away for half a second, then draws one frame. Exactly one
+  // report arrives, already at the right column.
+  r.draw(500)
+
+  expect(r.steps.length).toBe(before + 1)
+  const elapsed = 13 * HZ60 + 500 - HZ60
+  expect(r.steps.at(-1)).toBe(Math.floor(elapsed / INTERVAL))
 })
 
-test('steps are reported only from inside a frame, never between them', () => {
+test('steps are reported only from inside a frame, at most one per frame', () => {
   const r = rig()
   for (let i = 0; i < 30; i++) r.draw()
 
-  // Every step carries the frame it landed on, and no two share one.
   expect(r.landedOn).toEqual([...new Set(r.landedOn)])
-  expect(r.steps).toEqual(r.steps.map((_, i) => i + 1))
 })
 
-test('a frame dropped while calibrating does not make it run fast', () => {
+test('step values only ever increase', () => {
   const r = rig()
-  // One 100ms hitch among otherwise clean frames. A mean would read the refresh as
-  // ~28ms and step every 3 frames; the shortest gap still says 16.67.
-  r.draw(HZ60)
-  r.draw(100)
-  for (let i = 0; i < 50; i++) r.draw(HZ60)
+  for (let i = 0; i < 40; i++) r.draw(i % 3 === 0 ? 40 : HZ60)
 
-  expect([...new Set(r.gaps())]).toEqual([5])
+  const sorted = [...r.steps].sort((a, b) => a - b)
+  expect(r.steps).toEqual(sorted)
+  expect(new Set(r.steps).size).toBe(r.steps.length)
 })
 
-test('a stall slows the marquee rather than making it catch up', () => {
+test('the first frame sets the baseline without stepping', () => {
   const r = rig()
-  for (let i = 0; i < CALIBRATION + 12; i++) r.draw()
-  const before = r.steps.length
-
-  // The JS thread goes away for half a second. Frame callbacks are missed, not
-  // queued, so the next frame is one frame's worth of progress and no more.
-  r.draw(500)
   r.draw()
-
-  expect(r.steps.length).toBeLessThanOrEqual(before + 1)
-  // Monotonic by one, always: a burst is exactly what must not happen.
-  expect(r.steps).toEqual(r.steps.map((_, i) => i + 1))
-})
-
-test('an implausibly fast frame source is clamped rather than believed', () => {
-  const r = rig()
-  // What a zero-delay timeout polyfill would look like. Clamped to a 4ms floor, so
-  // 90ms is 23 of them: wrong, but watchable, rather than a blur.
-  for (let i = 0; i < 200; i++) r.draw(0.2)
-
-  expect([...new Set(r.gaps())]).toEqual([23])
-})
-
-test('nothing steps while the refresh is still being measured', () => {
-  const r = rig()
-  for (let i = 0; i < CALIBRATION; i++) r.draw()
-
   expect(r.steps).toEqual([])
+})
+
+test('a zero interval is floored rather than dividing time into infinity', () => {
+  const r = rig(0)
+  for (let i = 0; i < 5; i++) r.draw()
+  expect(r.steps.length).toBeLessThanOrEqual(5)
+  expect(Number.isFinite(r.steps.at(-1) ?? 0)).toBe(true)
 })
 
 test('stopping disarms the next frame', () => {

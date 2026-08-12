@@ -83,6 +83,9 @@ const GLYPHS: Record<string, string[]> = {
 
 export const TALL7: Font = {
   name: 'tall7',
+  label: 'Tall',
+  note: 'twice the height, 4 or 5 characters, never moves',
+  scrolls: false,
   height: 7,
   /** Bottom row on panel row 1, so the glyph reaches row 7 and clears row 8. */
   baseline: 1,

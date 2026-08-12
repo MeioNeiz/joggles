@@ -2,12 +2,16 @@ import { expect, test } from 'bun:test'
 import { COLS, ROWS, alive } from './display.js'
 import * as font from './font.js'
 import { BAND5 } from './fonts/band5.js'
+import { FONTS } from './fonts/fit.js'
 import * as kern from './fonts/kern.js'
 import { staticText } from './fonts/place.js'
 import { TALL7 } from './fonts/tall7.js'
-import type { Font } from './fonts/types.js'
 
-const FONTS: Font[] = [BAND5, TALL7]
+/**
+ * Every face a picker offers, so adding one to the registry is what subjects it
+ * to the whole of this file. A font that is not offered is not a font anybody
+ * can reach, and one that is offered has to hold every property below.
+ */
 const CORPUS = [
   'Hello there',
   'FUNKY GLASSES',
@@ -157,15 +161,40 @@ test('a space is never kerned away', () => {
 // against `alive` over the whole panel width rather than against row numbers,
 // because the row numbers are the thing that would be wrong.
 test('scrolling text only occupies rows that are alive across the whole panel', () => {
-  for (const s of CORPUS) {
-    const bitmap = font.panelBitmap(s)
-    expect(bitmap.length).toBe(ROWS)
-    for (let r = 0; r < ROWS; r++) {
-      if (!bitmap[r].some(Boolean)) continue
-      for (let c = 0; c < COLS; c++) expect(alive(r, c)).toBe(true)
+  const scrollers = FONTS.filter((f) => f.scrolls)
+  expect(scrollers.length).toBeGreaterThan(1)
+  for (const f of scrollers) {
+    for (const s of [...CORPUS, ...Object.keys(f.glyphs)]) {
+      const bitmap = font.panelBitmap(s, { font: f })
+      expect(bitmap.length).toBe(ROWS)
+      for (let r = 0; r < ROWS; r++) {
+        if (!bitmap[r].some(Boolean)) continue
+        for (let c = 0; c < COLS; c++) {
+          expect(`${f.name} row ${r} col ${c} alive ${alive(r, c)}`).toBe(
+            `${f.name} row ${r} col ${c} alive true`,
+          )
+        }
+      }
     }
+    expect(font.panelBitmap('Hg!', { font: f }).some((row) => row.some(Boolean))).toBe(true)
   }
-  expect(font.panelBitmap('Hg!').some((row) => row.some(Boolean))).toBe(true)
+})
+
+// The rule the whole band argument rests on, stated as arithmetic rather than as
+// prose: a face is `scrolls: true` only if its glyphs live inside rows 2 to 7,
+// and a face outside that band must declare itself static. `tall7` is the one
+// that fails the first half, which is why it declares the second.
+test('a font may only claim it scrolls if its whole band has an LED in every column', () => {
+  for (const f of FONTS) {
+    const top = f.baseline + f.height - 1
+    let clear = true
+    for (let r = f.baseline; r <= top; r++) {
+      for (let c = 0; c < COLS; c++) if (!alive(r, c)) clear = false
+    }
+    expect(`${f.name} rows ${f.baseline}-${top} clear ${clear}`).toBe(
+      `${f.name} rows ${f.baseline}-${top} clear ${f.scrolls}`,
+    )
+  }
 })
 
 test('panelBitmap still takes an explicit baseline as its third argument', () => {
@@ -239,4 +268,94 @@ test('a band5 glyph placed statically never has to step around anything', () => 
   expect(placed.dropped).toBe('')
   const direct = kern.measure(kern.pieces('HI', BAND5))
   expect(placed.ink).toEqual([placed.ink?.[0] ?? 0, (placed.ink?.[0] ?? 0) + direct - 1])
+})
+
+// ---------------------------------------------------------------- the registry
+
+test('every offered font is pickable: a stable name, a label, and a note', () => {
+  const names = new Set<string>()
+  const labels = new Set<string>()
+  for (const f of FONTS) {
+    expect(f.name).toMatch(/^[a-z][a-z0-9]*$/)
+    expect(f.label.length).toBeGreaterThan(0)
+    expect(f.note.length).toBeGreaterThan(0)
+    expect(names.has(f.name)).toBe(false)
+    expect(labels.has(f.label)).toBe(false)
+    names.add(f.name)
+    labels.add(f.label)
+    expect(font.fontByName(f.name)).toBe(f)
+  }
+  expect(names.size).toBeGreaterThanOrEqual(4)
+})
+
+// The rule track 33 stores items under, and the reason it is not `DEFAULT_FONT`:
+// an item saved before the picker existed rendered in band5 and has to keep
+// looking like itself, whatever a later default becomes. Asserted against BAND5
+// by identity rather than against DEFAULT_FONT, or the test moves with the bug.
+test('an item with no font stored, or an unknown one, reads as band5 for ever', () => {
+  expect(font.LEGACY_FONT).toBe(BAND5)
+  expect(font.fontByName(undefined)).toBe(BAND5)
+  expect(font.fontByName(null)).toBe(BAND5)
+  expect(font.fontByName('')).toBe(BAND5)
+  expect(font.fontByName('band-5')).toBe(BAND5)
+  expect(font.fontByName('helvetica')).toBe(BAND5)
+  expect(font.DEFAULT_FONT).toBe(BAND5)
+})
+
+// band5's widths decide, for every text item ever saved, whether it is still and
+// free or scrolling and five page erases. Changing a glyph in it silently
+// re-renders and sometimes re-prices old content, which is why the new faces
+// were added beside it. These numbers are that promise, written down.
+test('band5 measures what it has always measured', () => {
+  const frozen: Array<[string, number]> = [
+    ['JOGGLE', 23],
+    ['JOGGLES', 27],
+    ['Hello there', 37],
+    ['FUNKY GLASSES', 49],
+    ['GLASSES-125B37', 51],
+    ['F', 3],
+  ]
+  for (const [s, want] of frozen) {
+    expect(`band5 "${s}" ${font.textWidth(s)}`).toBe(`band5 "${s}" ${want}`)
+  }
+})
+
+// The trap `panelFor` exists to close, checked against `alive` rather than
+// against row numbers: the direct scrolling path applied to tall7 would sit its
+// baseline on panel row 1 and draw into the nose notch, so a picked font has to
+// route by what the font says about itself.
+test('panelFor never lights a dead LED, whichever face was picked', () => {
+  for (const f of FONTS) {
+    for (const s of [...CORPUS, 'OK', '3:45', 'Hg!']) {
+      const bitmap = font.panelFor(s, f)
+      expect(bitmap.length).toBe(ROWS)
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < Math.min(bitmap[r].length, COLS); c++) {
+          if (bitmap[r][c]) {
+            expect(`${f.name} lit ${r},${c} alive ${alive(r, c)}`).toBe(
+              `${f.name} lit ${r},${c} alive true`,
+            )
+          }
+        }
+      }
+    }
+  }
+  // The direct call is still the wrong one for a static face, which is the whole
+  // reason the router exists: it puts ink where there are no LEDs. Only for text
+  // that reaches columns 10 to 14, which is why "OK" alone would not have shown
+  // it and why this counts over strings long enough to cross the bridge.
+  const onDead = (bitmap: number[][]) => {
+    let n = 0
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < Math.min(bitmap[r].length, COLS); c++) {
+        if (bitmap[r][c] && !alive(r, c)) n++
+      }
+    }
+    return n
+  }
+  const crossers = ['HELLO', '3:45 OK', 'FUNKY']
+  expect(crossers.some((s) => onDead(font.panelBitmap(s, { font: TALL7 })) > 0)).toBe(true)
+  for (const s of crossers) expect(onDead(font.panelFor(s, TALL7))).toBe(0)
+  expect(font.panelFor('OK', TALL7)).toEqual(font.staticText('OK', { font: TALL7 }).bitmap)
+  expect(font.panelFor('OK')).toEqual(font.panelBitmap('OK'))
 })

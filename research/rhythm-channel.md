@@ -5,9 +5,10 @@ which it is ignored. Written for track 9, whose encoder is
 `packages/core/src/rhythm.ts`.
 
 A separate file rather than an edit to `research/firmware-internals.md` because that
-file belongs to another track and was under review while this was written. **Three
-of its entries are corrected below** and one entry in `research/vendor-app-protocol.md`
-is too; whoever owns those next should fold this in rather than leave two accounts.
+file belonged to another track and was under review while this was written. It corrects
+three entries there and one in `research/vendor-app-protocol.md`. *All four were folded
+into those files on 2026-08-11, so this is no longer the only account: this file remains
+the byte-level walk, and they carry the conclusions.*
 
 Offsets are `abs`, as everywhere. Reproduce with the recipe at the end of
 `firmware-internals.md`, then read `abs 0x186b4`, `0x201c0` and `0x21b04`.

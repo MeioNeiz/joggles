@@ -10,7 +10,8 @@ self-contained: read only the one that matches your task.
 | `firmware-internals.md` | **What the firmware is.** The UART display module, the on-board button, the real 11-opcode dispatcher, the animation engine, the `DATCP` gate and why type 2 never reaches flash, what a patch buys | Deciding whether to patch at all, or hunting a capability |
 | `hardware-access.md` | SWD pads, chip package, probes, dump and restore procedure | **Now the recovery route, not insurance.** See `brick-2026-08-08.md` |
 | `firmware-image-format.md` | OTA container format, firmware internals, SoC identity | Inspecting or rebuilding an image. **Its flash map and risk verdict are superseded by `firmware-flashing.md`** |
-| `vendor-app-protocol.md` | Saved content (`DATS`/`DATCP`), wide buffers, complete opcode inventory, hard limits. **Measured upload ceiling and pacing floor**: 740 columns not 768, 6 ms not 50 ms, both on the `960a` bulk stream only and live per-column pacing unmeasured. **Type 2 is accepted to 383 columns, displays only the first 24, and never persists** | Improving rendering, driving the display, or sizing and pacing an upload |
+| `vendor-app-protocol.md` | Saved content (`DATS`/`DATCP`), wide buffers, complete opcode inventory, hard limits. **Measured upload ceiling and pacing floor**: 740 columns not 768, 6 ms not 50 ms, both on the `960a` bulk stream only and live per-column pacing unmeasured. **Type 2 is accepted to 383 columns and never persists**, both device-side and *verified*; **that it displays only the first 24 is *derived***, one null observation by eye, and `content.MAX_IMAGE_COLUMNS` is where the code holds the line | Improving rendering, driving the display, or sizing and pacing an upload |
+| `loop-gap-2026-08-10.md` | **The device appends ~24 blank columns to a scrolling type 1 save, and the preview was not showing them.** Both uploads decoded off the app's wire log, the gap measured against them by eye. Whether the 24 is unconditional or only follows a restore from flash is open, and the two looks that settle it are the first thing in the file | Previewing a scroll, sizing a client gap, or trusting a wide loop to stay seamless |
 | `ota-codec.ts` | Runnable decode/encode/verify for OTA images | Inspecting or rebuilding a firmware image |
 | `tools/fwtool.ts` | Analysis workbench: `peek`, `xref`, `callers`, `modes`, `render`, `regions` | Any question about the image. **Read its header before scanning by hand** |
 | `tools/patch.ts` | Builds a patched image from stock: `expect`-the-old-bytes edits, appends into free flash, assertions on bytes a patch depends on | Writing any firmware patch |
@@ -20,13 +21,22 @@ self-contained: read only the one that matches your task.
 | `tools/mkelf.ts` | Minimal ELF wrapper so llvm-objdump will disassemble the raw image | Reproducing the disassembly |
 | `tools/swd-recon.sh` | The read-only OpenOCD session: `probe`, `ids`, `diag`, `dump`. **Holds no write or erase command by construction** | When the SWD probe is attached |
 | `tools/dumpcheck.ts` | `bun run dumpcheck`: is a dump trustworthy, and what device state does it show? Validates by diffing `abs 0x16800` against `ota.plaintext()`, which proves the dump and the flash map at once | Reading anything `swd-recon.sh dump` produced |
+| `tools/bankdump.ts` | `bun run bankdump`: the built-in images and animations as pictures. `list` re-resolves the bank inventory by walking the per-tick table and diffs it against `firmware-internals.md`, `show`/`sheet` render frames as ASCII, `emit`/`check` own the phone app's generated `builtins-data.ts`. Offline and device-free, held there by a test | Looking at what a built-in actually shows, or after any change to the banks |
 
 The client half of the extension protocol is `packages/core/src/jgx.ts`, and `tools/ext.ts`
 imports its constants rather than restating them, so the firmware and the app cannot drift.
-`notes/firmware-design.md` is the architecture and the reasoning.
+`notes/firmware-design.md` is the architecture and the reasoning, and its opening section
+"Whose glasses these are, and why modifying them is fair" is the ethical stance behind
+modifying a product we did not make: own units only, no vendor binaries redistributed, patch
+in place.
 
-`notes/protocol.md` remains the day-to-day protocol reference (key, frame format,
-geometry, command table). These documents extend and in places correct it.
+`notes/protocol.md` is the transcription-and-evidence record: the AES key, the panel
+geometry, the command table, and **how each of those facts was established**, capture by
+capture. The wire formats themselves are owned by the docblocks in `packages/core/src` -
+`protocol.ts` for frames and channels, `dats.ts` for the upload path and both payload
+encodings, `display.ts` and `content.ts` for the panel and its limits. So go to the
+docblocks for what a frame looks like, and to `notes/protocol.md` for why we believe it.
+These documents extend and in places correct both.
 
 **Scope boundary.** Everything in `research/` is a finding: a claim about the hardware
 or the firmware, with its evidence and a confidence marker. Judgement about what to
@@ -67,15 +77,29 @@ markers below are the canonical set; do not introduce others.
 The display protocol is solved and verified on hardware. The OTA container format is
 also solved: the payload is XOR-obfuscated with a fixed 128-byte pad, not encrypted
 with a key we lack, and the header CRC-32 covers the deobfuscated body, so valid
-modified images can be built. **Flashing an app image over BLE is now judged
-reasonably safe**, because the OTA has been disassembled and is staged: it writes to
-a separate bank at `abs 0x29400` and never erases the running application, so an
-aborted transfer costs nothing and we can re-flash stock ourselves at any time. The
-earlier "not safe yet" verdict rested on two mistakes, both corrected in
-`firmware-flashing.md`: the region below `abs 0x16800` is the BLE stack rather than
-the bootloader, and the staging bank does exist. Better rendering still requires no
-firmware changes at all: the device already stores and scrolls buffers far wider than
-the panel.
+modified images can be built. **Staging an app image over BLE is safe and *verified* on
+hardware; committing one is barred and has already cost a unit.** The OTA writes to a
+separate bank at `abs 0x29400` and never erases the running application, so `bun run
+flash stage` costs nothing if it aborts. The `03` control write that commits is a
+different matter: on 2026-08-08 a *stock over stock* commit bricked `GLASSES-12C3EF`,
+staging fine and the device's own CRC matching, and it reset itself and never came back.
+`packages/cli/src/flash.ts` refuses `commit` outright without `--ldrom-verified`, which
+nobody can honestly pass until the LDROM has been dumped over SWD.
+`research/brick-2026-08-08.md` is the postmortem and "Incident: the commit that did not
+come back" in `firmware-flashing.md` is the same event from the flash side.
+
+*Corrected 2026-08-11: this paragraph read "**flashing an app image over BLE is now
+judged reasonably safe**" and "we can re-flash stock ourselves at any time", and it
+contradicted this file's own first two index rows. The brick falsified both, and the
+second one exactly: re-flashing stock ourselves is the capability that was lost, and the
+image committed was byte-identical stock. The judgement is kept here rather than deleted
+because it is why the bar in `flash.ts` is worded as a claim about evidence rather than
+another `--yes`. What the earlier verdict got right, and still holds, is the two mistakes
+it overturned, both corrected in `firmware-flashing.md`: the region below `abs 0x16800`
+is the BLE stack rather than the bootloader, and the staging bank does exist.*
+
+Better rendering still requires no firmware changes at all: the device already stores and
+scrolls buffers far wider than the panel.
 
 **Every open gate that could be closed without hardware now is.** The animation banks,
 both frame formats and the complete mode map are decoded; the button section including

@@ -52,12 +52,22 @@ const panel = (bitmap: number[][]) => {
 
 const argText = process.argv[2]
 
+/** One line saying what this face does with this text, and what it costs. */
+const verdict = (f: font.Font, text: string): string => {
+  const v = font.fit(text, f)
+  const cost = v.free ? 'free' : v.usable ? 'scrolls, five erases' : `dropped "${v.dropped}"`
+  return `${f.name} (${f.label}), ${v.columns} columns, ${cost}`
+}
+
+/** Every face's take on one string: the picker's whole job, in the terminal. */
+const show = (f: font.Font, text: string) => {
+  console.log(verdict(f, text))
+  panel(f.scrolls ? font.panelBitmap(text, { font: f }) : font.staticText(text, { font: f }).bitmap)
+  console.log()
+}
+
 if (argText) {
-  console.log(`\nband5, scrolling, ${font.textWidth(argText)} columns\n`)
-  panel(font.panelBitmap(argText))
-  const placed = font.staticText(argText)
-  console.log(`\ntall7, static${placed.dropped ? `, dropped "${placed.dropped}"` : ''}\n`)
-  panel(placed.bitmap)
+  for (const f of font.FONTS) show(f, argText)
   process.exit(0)
 }
 
@@ -66,17 +76,17 @@ const lower = [...'abcdefghijklmnopqrstuvwxyz']
 const digits = [...'0123456789']
 const punct = [...' !?.,;:-+=\'"<>*/()[]#@%&$^_']
 
-console.log('\n=== band5: 5 rows, scrolling, sits at panel rows 2-6 ===\n')
-sheet(font.BAND5, [...upper, ...lower, ...digits, ...punct])
+for (const f of font.FONTS) {
+  const rows = f.scrolls
+    ? `sits at panel rows ${f.baseline}-${f.baseline + f.height - 1}`
+    : 'static, placed around the notch'
+  console.log(`\n=== ${f.name}: ${f.height} rows, ${rows} - ${f.note} ===\n`)
+  sheet(f, [...upper, ...lower, ...digits, ...punct].filter((ch) => f.glyphs[ch]))
+}
 
-console.log('=== tall7: 7 rows, static, sits at panel rows 1-7 ===\n')
-sheet(font.TALL7, [...upper, ...digits, ...' .,:!?-+=\'/<>()%'])
-
-console.log('=== band5 on the panel: every glyph clears the notch ===\n')
-for (const sample of ['Hello there', 'FUNKY GLASSES', 'jaguar 42%', 'Wavey, mate!']) {
-  console.log(`${sample}  (${font.textWidth(sample)} columns)`)
-  panel(font.panelBitmap(sample))
-  console.log()
+console.log('=== the same words in every face: where the free 24 columns run out ===\n')
+for (const sample of ['Hello there', 'FUNKY GLASSES', 'jaguar 42%', 'Wavey, mate!', 'JOGGLES']) {
+  for (const f of font.FONTS) show(f, sample)
 }
 
 console.log('=== tall7 placed around the dead pixels ===\n')

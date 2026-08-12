@@ -58,17 +58,33 @@ export const TYPE_IMAGE = 2
  * records `ncols = N + 48` (`abs 0x1833e`), 24 columns before the content and 24
  * after.
  *
- * **The scroll walks them only after a power cycle.** In the session that saved,
- * `MODE 02` loops the bare content width: a solid 32-column block looped seamlessly
- * on hardware 2026-08-10, no dark pass (*verified*). After a power cycle the device
- * restores from the flash record and the 48 blank columns join the loop (*derived*
- * from the record layout; the power-cycle observation is running as track 16).
+ * **One of the two is walked, and it is the trailing one.** A save of 27 columns
+ * carrying no client gap at all showed about a screen's width of dark between
+ * repeats, the word clearing the panel completely before the next arrived (Jacob, by
+ * eye, 2026-08-11; the 27 columns and their single blank column are *verified* off
+ * the decoded wire log). 24 blank and not 48, which fits a scroll that resumes where
+ * the content starts, at store column 24, and wraps at `ncols`: it walks `N + 24` and
+ * never reaches the lead-in (*derived*).
  *
- * Two consequences, both track 16's finding. A client-side trailing gap on a
- * scrolling type 1 save buys nothing: the persistent loop already carries 48 blank
- * columns, and more just lengthens the dark pass between repeats. And previews must
- * simulate the post-cycle loop (`viewport.marqueeAt`), because unattended-and-
- * power-cycled is the state the glasses actually live in.
+ * **A second observation supports it, from the other side.** Both scroll directions
+ * show dead space and one shows it at the *beginning* of the pass
+ * (`research/vendor-app-protocol.md`, 2026-08-11, *verified* by eye), which is the
+ * record's `[24 blank][content][24 blank]` seen from a backward pass: direction picks
+ * **which** bracket is walked, not **how many**. So the model predicts one bracket in
+ * both directions, and has now been looked at twice.
+ *
+ * **The contrary observation, still unexplained.** A solid 32-column block looped
+ * with no dark pass at all in the session that saved it (2026-08-10, *verified*). So
+ * either the device's 24 arrives only once the save has been restored from flash, or
+ * one of the two readings is wrong. `research/loop-gap-2026-08-10.md` names the
+ * experiment; it is two looks and no flash. **Nobody has measured the size**: one
+ * panel width and two are told apart by whether the panel goes properly empty for a
+ * beat or only for an instant, and that look is still owed.
+ *
+ * Two consequences. `content.SCROLL_GAP` is 0, because a client gap **adds to** this
+ * one rather than replacing it and one screen's width is what was wanted. And
+ * `viewport.LoopModel` exists: a preview walks `N + 24` because that is what a viewer
+ * sees, while anything reasoning about the buffer walks `N`.
  */
 export const TYPE1_BRACKET = 24
 

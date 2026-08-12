@@ -12,6 +12,10 @@ as you draw. Everything in `notes/what-to-build.md` is downstream of these three
 with", not "guarded against". It never links the OTA code at all. See "Safety", which is
 the part worth reading twice.
 
+**This file is reasoning, not reference.** Every module in `packages/core/src` carries its
+own docblock and that is where the detail lives; what is here is why, what was tried and
+rejected, and what turned out wrong.
+
 ## Flash wear: what actually costs a cycle
 
 Asked because the vendor app has a live draw mode, and the answer decides the whole shape
@@ -28,15 +32,6 @@ of the app. **Live drawing writes no flash at all.** Only one action does.
 
 *derived* from `abs 0x218cc`, which holds **five hardcoded 512-byte page erases**, and from
 the staging buffer's address being confirmed by adjacency to the live buffer.
-
-Three consequences that shape the design:
-
-- **A one-column save costs exactly as much wear as a 740-column save.** The five erases are
-  hardcoded and always the same five pages, so there is no wear levelling and no benefit to
-  saving smaller content. The lever is **saving less often**, never saving less.
-- **An aborted upload costs zero.** Streaming blocks only fills SRAM. If the phone
-  backgrounds or the user cancels before `DATCP`, no flash was touched. Cancel is safe.
-- **Live draw is unlimited.** Draw all night, every stroke, no wear at all.
 
 ### How much headroom is there
 
@@ -73,30 +68,15 @@ Do not let the two blur: they deserve different amounts of alarm.
 
 ### The choke point
 
-**`dats.datsComplete()` is called from exactly one function in the whole codebase**, and
-that function is `session.save()`. Everything else goes through it. This is testable:
-assert that `datsComplete` has one caller outside its own tests, and the build fails when
-someone adds a second.
+One caller (`session.save()`), one guard, and `choke-point.test.ts` fails the build if a
+second caller of `datsComplete` appears. `budget.ts` `LIMITS` is the specification for the
+rules. The two things about them that the code cannot say:
 
-`session.save()` is wrapped by a budget guard that **throws rather than queues**, because
-a queue turns a runaway into a slower runaway:
-
-| Rule | Value | Behaviour on breach |
-| --- | --- | --- |
-| Identical payload | hash of the bytes plus type | **skip silently**, report "already on the glasses" |
-| Minimum interval | 3 s since the last save to this device | throw, and surface it as a bug not a user error |
-| Rolling hour | 30 saves | require an explicit confirmation to continue |
-| Rolling day | 200 saves | refuse, and require a developer override flag |
-| Lifetime, per device | counted, no cap | shown in the UI, see Visibility |
-
-The interval and hourly numbers are deliberately far above any human pattern and far
-below any loop. A person saving a message every few seconds for a whole minute is fine; a
-render loop hits the interval rule on its second iteration and dies loudly.
-
-**The guard lives in `packages/core`, not in the app**, so the CLI is covered by the same
-rules and `uploadbench.ts` has to pass the override flag and print what it is about to
-spend. One implementation, both hosts, and the laptop is where the loops actually get
-written.
+**It throws rather than queues**, because a queue turns a runaway into a slower runaway
+and hides the bug that caused it. And the numbers are chosen to sit **far above any human
+pattern and far below any loop**: a person saving a message every few seconds for a whole
+minute is fine, and a render loop hits the interval rule on its second iteration and dies
+loudly.
 
 ### What could cause a runaway
 
@@ -147,6 +127,28 @@ and it is the only number we will ever have.
 - **Cancel is genuinely free.** No flash is touched until `DATCP`, so a cancelled upload
   costs nothing and the UI can say so.
 
+#### Built, 2026-08-11
+
+All three, in `src/screens/Connected.tsx` over `src/deliver.ts`: the free path is Show now
+through `LiveSender`, the flash path is Save to glasses through `deliver()`, and each
+button carries `deliver.costOf()`'s own sentence rather than a label. Cancel is a
+`SaveOpts.cancel` callback asked before every block and once more before `DATCP`, so it is
+free in fact and not only in principle. The save log is `ledger-shape.ts`'s `saveLog()`
+over the `recent` array the budget already kept.
+
+Two things these bullets did not anticipate, both now in the UI:
+
+- **Grey is a question, not a refusal.** `deliver.greyChoice()` costs both answers, because
+  `savedType()` otherwise lets one dim pixel decide whether a save survives a power cycle,
+  and flattening returns dim pixels at *full* brightness rather than dim ones.
+- **A save discards the live buffer**, including a drawing the Draw screen left on the
+  panel. Which of the two the panel is showing is `App.tsx`'s state, because Compose
+  unmounts on the trip to Draw, and Compose warns once before the first `MODE` that would
+  throw one away.
+
+**None of it has been seen on a handset or a panel**: no unit was advertising on the
+evening it was built, so every claim above is the wire under `bun test` plus the code.
+
 ## The two delivery routes, and everything follows from them
 
 Every feature in this app is a choice between these. The whole content model exists to
@@ -161,20 +163,32 @@ make that choice explicit rather than accidental.
 | Needs a connection | yes, continuously | only during upload |
 | Flash | none | 5 pages per `DATCP` |
 | Latency | one write, ~7 to 20 ms | 1.1 to 5.0 s of transfer for 700 columns |
-| Motion | anything, but full-frame changes sweep | **horizontal translation only** |
+| Motion | anything, but full-frame changes sweep | **translation only, but two-axis** (see below) |
 | Enter with | `SMVEW 01` | nothing, DATS does not need DIY |
 
 **The Saved column is DATS type 1 throughout.** Type 2, the greyscale encoding, is a
 third route wearing the second one's clothes: same channel and handshake, but **24
 usable columns**, no flash and **no persistence past a power cycle**. Its Persists and
-Flash rows read the same as Live's. *verified* 2026-08-09, `research/vendor-app-protocol.md`.
-*Corrected: this said 383 columns, which is what the device accepts rather than what it
-displays, and was marked derived before verify item 4 ran.*
+Flash rows read the same as Live's. *verified* 2026-08-09,
+`research/vendor-app-protocol.md`. *Corrected: this said 383 columns, which is what the
+device accepts rather than what it displays, and was marked derived before verify item 4
+ran.*
 
 **Size the progress bar from transfer, not from the cycle.** At 700 columns the measured
 numbers are 4984 ms of transfer at the vendor's 50 ms pacing and 1081 ms at 6 ms; the
 often-quoted 5.9 s and 2.0 s are connect-to-disconnect, which includes ~900 ms of
-connection setup the bar should show as its own step. *verified*, `research/vendor-app-protocol.md`.
+connection setup the bar should show as its own step. *verified*,
+`research/vendor-app-protocol.md`.
+
+***Corrected 2026-08-12, by the sitting.* This row read "horizontal translation only"
+and that was too narrow.** On power-up with nothing connected, the device restored its
+saved word and played it **bouncing up and down while travelling left**, which is
+`MODE 03`: the vertical bounce, whose second byte is a direction, so it bounces *and*
+travels (*verified* by eye, `research/vendor-app-protocol.md`, "The sitting"). So the
+saved route gets two-axis motion for the same zero flash and zero radio, and **the app
+exposes only `MODE 02`**. What stays true is that the device translates a buffer rather
+than paging through frames, so "no frame-flip animation of our own content on stock"
+still holds and is the thing that actually needs firmware.
 
 **The sweep is the live route's defining limit and it is not fixable.** Each column write
 pushes a whole frame to the display module, so a full-panel change shows 24 successive
@@ -217,37 +231,8 @@ from; a drawn animation is something that plays while your phone is out and conn
 
 ### One sequencer, two transports
 
-The sequencing logic in `packages/cli/src/glasses.ts` is the valuable part and it is
-currently welded to noble. Split it, or the phone gets a second implementation of the DATS
-handshake and the two drift.
-
-    packages/core/src/transport.ts  built. Transport, Scanner, Discovered
-    packages/core/src/session.ts    built. Glasses, transport-agnostic
-    packages/core/src/budget.ts     built. the flash guard and the per-device ledger
-    packages/core/src/sender.ts     increment 2. the coalescing live sender
-    packages/cli/src/noble.ts       built. noble adapter, ~130 lines not ~60
-    packages/app/                   Expo app + ble-plx adapter
-
-```ts
-export interface Transport {
-  write(char: string, block: Uint8Array, withResponse: boolean): Promise<void>
-  subscribe(char: string, on: (block: Uint8Array) => void): Promise<void>
-  disconnect(): Promise<void>
-}
-
-/** Discovery is platform code too, and the Scan screen needs a list, not the first hit. */
-export interface Scanner {
-  scan(onFound: (unit: Discovered) => void): Promise<void>
-  stop(): Promise<void>
-  connect(id: string): Promise<Transport>
-}
-
-export interface Discovered {
-  id: string    // opaque, the platform's own handle
-  name: string  // advert name, which picks the cipher before the connection is open
-  rssi: number
-}
-```
+`core/src/transport.ts` is the boundary and its docblock carries the reason for the split.
+What the code cannot state is the design that was rejected:
 
 **Two interfaces, not one, and this was the part of the extraction that was real design
 work rather than moving code.** `Glasses.open()` fused scan, connect and subscribe into
@@ -257,71 +242,30 @@ noble object. A Scan screen needs all three pulled apart: a `Scanner` the app dr
 `Glasses.attach(transport, name)` taking a connection that is already open. The name has
 to arrive as an argument because `Options.cipher` can be a function of it.
 
-**Done.** `Glasses.open()` is gone. The CLI's one-shot is `open()` in
-`packages/cli/src/glasses.ts`, which is `NobleScanner.first()` plus `connect()` plus
-`attach()`, and `first()` carries a comment saying why a Scan screen must not use it. The
-adapter discovers **only** the four allowed characteristics, so nothing above it ever
-holds a handle on the flash-writing service; `assertChannel()` is the second check.
-
-Characteristic UUIDs cross this boundary in their dashed form, as `protocol.ts` declares
-them. Each adapter normalises: noble strips the dashes, ble-plx does not.
-
-Everything above that line is pure TS and unit-testable against a mock transport, which is
-what makes "the phone sends the same bytes as the CLI" a test rather than a hope.
-
-Do the extraction first, on the laptop, where a bug is a stack trace and not a rebuild
-cycle. `bun cli text` still working afterwards is the regression gate.
-
 ### What has already landed
 
-Prep done on 2026-08-09, before any app code, so the next session does not re-derive it.
-All of it is laptop-side and `bun test` passes with it.
+Prep done on 2026-08-09, before any app code. All of it names a file that exists now, so
+the changelog is gone; one row survives because it records a mistake.
 
 | Change | Why it could not wait |
 | --- | --- |
-| `ota`/`dfu` out of the barrel, into `core/src/firmware.js` | safety item 1 was unenforceable while `index.ts` exported them |
-| `protocol.SERVICE_OTA` deleted | it put an OTA UUID in the one module the app must import. `dfu.ts` already declared it |
-| `safe-surface.test.ts` | the build-failing test safety item 1 asks for, plus the no-Node assertion the stack decision rests on |
-| `dats.ts` corrected mapping, `DATS_ROWS` 9 | safety item 3. Everything that renders sits on this |
-| `font.panelBitmap()` | places 5-row glyphs into 9 panel rows, so the renderer and the preview cannot disagree |
-| `protocol.mode(kind, dir)`, `protocol.clear()` | safety item 5. The misnamed helpers are gone rather than deprecated |
-| Ignored opcodes grouped and labelled in `protocol.ts` | so no screen is built on a control that does nothing |
 | `uploadbench.ts` enforces 740 columns and prints its flash cost | it defaulted to 768, which the device rejects, and it is the loop from "Our own bench and sweep scripts" |
-
-The three experiment scripts that called `scrollLeft(3)` now call `mode(3, 1)`. Same
-behaviour, since the second byte is a boolean, and their prose no longer calls `MODE 03`
-"scroll left".
 
 ### Phase 0, landed 2026-08-09
 
-The extraction and the flash guard. Laptop-side, `bun test` at 170.
+The extraction and the flash guard, laptop-side.
 
-**The regression gate has not been run.** No hardware was touched in this session, so
-`bun cli text` working after the extraction is *derived* from the mock and not
-*verified*: the suite, a bundle resolve of every CLI entry, a `tsc --noEmit` pass and a
-mock run of the exact `cmd text` sequence (`SMVEW 01`, `LEDON`, 24 column writes with
-only the last acked, `STYPE` flush, disconnect - identical to before). The one piece no
-mock covers is `packages/cli/src/noble.ts` itself, and its trap is that noble's second
-write argument is `withoutResponse`, the inverse of `Transport.write`. Getting that
-backwards is silent: writes still land, just unacked, and the last column of a frame
-goes missing on disconnect. **So run `bun cli text` first, and look at the last column.**
+**The one piece no mock covers is `packages/cli/src/noble.ts`**, and its trap is that
+noble's second write argument is `withoutResponse`, the inverse of `Transport.write`.
+Getting that backwards is silent: writes still land, just unacked, and the last column of
+a frame goes missing on disconnect. **So run `bun cli text` and look at the last column.**
 
-| Change | What it means for the app |
-| --- | --- |
-| `core/src/transport.ts`, `core/src/session.ts` | `Glasses` no longer knows what noble is. The phone gets the DATS handshake for free rather than reimplementing it |
-| `cli/src/noble.ts`, `cli/src/glasses.ts` down to 40 lines | the adapter is the only file that knows a platform. ble-plx is the same shape |
-| `core/src/mock-transport.ts` + `session.test.ts` | the wire is asserted without hardware: which characteristic, how many blocks, which write is acked |
-| `core/src/budget.ts` + `budget.test.ts` | the four rules, per device, over a persisted ledger |
-| `choke-point.test.ts` | scans every `.ts` in the repo and fails if a second caller of `datsComplete` appears |
-| `cli/src/ledger.ts`, `bun cli ledger` | the count survives invocations, and can be read without connecting |
-| `uploadbench.ts` varies its payload per pass | six identical saves would be five duplicates, which the guard skips; the bench would have timed nothing |
-
-**Two things the guard does that the table above does not say.** The duplicate rule only
-matches a save the device *acknowledged*, so retrying after `ERROR` is not mistaken for a
-no-op; and a save is counted even when the reply is `ERROR`, because the erases happen at
-the device's end either way. The interval rule also reads an in-memory attempt stamp, not
-just the ledger, or two saves fired at once would both pass before either recorded
-anything, which is exactly the StrictMode case.
+The extraction's regression gate was a mock run of the exact `cmd text` sequence and not
+hardware, so "`bun cli text` still works" is *derived*: `SMVEW 01`, `LEDON`, 24 column
+writes with only the last acked, `STYPE` flush, disconnect, identical to before. `Glasses`
+has since driven real hardware through this adapter (track 5's `type2.ts`, 2026-08-09),
+which exercised the DATS path rather than those 24 live writes, so the last-column check
+still stands.
 
 ### Phase 1, landed 2026-08-09: the phone writes flash
 
@@ -343,104 +287,37 @@ has yet looked at the glasses to see it move. Item 5, `MODE 02` on content narro
 the panel, is untouched by this: `content.text` pads every upload to at least 24 columns,
 so the case has been hedged rather than answered.
 
-| Change | Why |
-| --- | --- |
-| `app/src/deliver.ts` + `deliver.test.ts` | the save sequence out of the `onPress` and into a function, so "DATS, blocks, DATCP, SPEED, MODE" is eight assertions against the mock rather than a person squinting at LEDs |
-| `app/src/ledger.ts` | `LedgerStore` over expo-file-system, and the app's one `FlashBudget` at module scope. Per connection would reset the interval rule on every reconnect |
-| `app/src/ble.ts` releases connections before scanning | **a connected peripheral does not advertise**, so a Fast Refresh left the pair invisible and it looked exactly like the glasses being off. One `BleScanner` at module scope too: it must outlive the Scan screen, because the connection it opens is handed to the screen that replaces it |
-| `Preview` takes a window, not a bitmap | safety item 4 made structural: it is handed `viewport.windowAt` output, so there is no bitmap in scope to mask by mistake |
-| `deliver.problems()` refuses grey | `session.save()` still announces type 1, so greyscale would flatten with nothing able to say so. Refusing beats silently dropping levels; the draw canvas is what needs the `type` argument threaded into `dats.datsStart` |
-
-**A trap for anyone reading frames back.** `MockTransport.commands` takes the leading run
-of capitals, so an argument byte that happens to be an uppercase letter joins the opcode:
-`SPEED 85` is `0x55`, which is `U`, and it reads back as `SPEEDU`. `deliver.test.ts`
-matches against a known opcode list instead.
+**A trap for anyone reading frames back**: `opcodeOf` mis-splits any frame whose first
+argument byte is an uppercase letter, so tests match against a known opcode list instead.
+The rule is in `core/src/mock-transport.ts`.
 
 #### The preview is a simulation, and that took three goes
 
 Reported as "speeds up and slows down", then "still not smooth, slight delays", then
 "slow scrolls faster than fast". Three separate causes, and only the first was the one
-originally guessed at.
-
-1. **A counted `setInterval` surges.** React Native's timers do not skip: a stalled JS
-   thread fires every callback that came due together, so the message lurches several
-   columns and hesitates. Counting turns a stall into a debt repaid in a burst. The step
-   is now a function of time, so a stall drops a column instead.
-2. **Milliseconds beat against the refresh.** 90ms is 5.4 frames at 60Hz, so steps land
-   alternately 5 and 6 frames apart - each one on time, and visibly uneven, because the
-   eye compares against the frames it is drawn in. The clock now measures the refresh
-   period and counts **frames**, so every column move is the same number of frames after
-   the last. `packages/app/src/clock.ts`, and both failures are tests.
-3. **Speed did nothing.** The preview ran at a fixed rate whatever the Speed button said.
-   It now runs at the device's own rate, and the screen states it: 3.8 columns per second
-   at Slow, 12.5 at Fast.
-
-Renders got cheaper on the way: styles are built once instead of per pixel per frame,
-each row bails out unless its own 24 values changed, and the clock lives inside the panel
-so a column step no longer re-renders the text field and four button rows with it.
-
-**`SPEED`'s ladder has ten buckets, not six.** *verified*, disassembled from
-`abs 0x183da`: it compares the argument against 10, 20, 30 ... 90 and writes a frame
-divisor of 13 down to 4 to RAM `0x2000266e`, and the panel holds each column for that
-many ticks of its 50 Hz clock - so a column lasts `divisor * 20ms`, 260ms down to 80ms.
-*Corrected: `research/firmware-internals.md` records the ladder as comparing against "50,
-60, 70, 80, 90", which is the five comparisons inside the address range it quotes; four
-more sit just before it at `0x183de`-`0x183fe`.* The 3.8 to 12.5 columns per second in
-the same paragraph is right, and is these two endpoints. The table is
-`packages/app/src/speed.ts` and **it belongs in `packages/core/src/protocol.ts`** next to
-`protocol.speed()`; it is in the app only because `protocol.ts` is not that track's file
-while other agents are running.
+originally guessed at. All three are written up where they were fixed:
+`packages/app/src/clock.ts` for the timing pair, `Preview.tsx` for the render cost, and
+`core/src/protocol.ts` for the device's real rate. Both timing failures are tests.
+*Corrected 2026-08-11: the rate pointer said `packages/app/src/speed.ts`. The ladder moved
+to `protocol.ts` beside `protocol.speed()` so the CLI shares it; `speed.ts` now holds only
+the three presets and re-exports.*
 
 ### The content model
 
-One representation, two encoders. The bug this prevents is code that knows which route it
-is on and hardcodes an encoding to match.
-
-```ts
-type Bitmap = number[][]          // [row][col], values 0-3, row 0 is the bottom
-type Route = 'live' | 'saved'
-
-interface Content {
-  bitmap: Bitmap                  // 9 rows, 1 to 740 columns
-  route: Route
-  motion: { kind: 'static' } | { kind: 'scroll'; dir: 0 | 1; speed: number }
-}
-```
-
-Renderers (text, drawing, future generators) all produce a `Bitmap` and nothing else. The
-delivery layer owns every wire detail: 2bpp versus 1bpp, column width, which characteristic,
-which handshake. **Greyscale survives the live route and DATS type 2; DATS type 1 flattens
-to 1 bit.** Say so in the UI when a drawing with grey levels is saved as text.
+One representation, two encoders, in `core/src/content.ts`. The UI consequence, which is
+the part the encoders cannot state: **greyscale survives the live route and DATS type 2,
+and DATS type 1 flattens it to 1 bit**, so say so when a drawing with grey levels is
+saved as text.
 
 #### Built, 2026-08-09
 
-`packages/core/src/content.ts` and `viewport.ts`, plus `dats.encodeImage` for type 2.
-`content.encodeSaved()` picks the type from the content and reports `flattened` so the UI
-has something to say; `viewport.windowAt()` is the 24-column window with `alive()` applied
-at the window, which is safety item 4 made unavoidable rather than remembered.
-
-**The two ceilings are unrelated numbers.** *Corrected, twice:* the Width row in "The two
-delivery routes" says 740 columns, which is 1480 bytes at type 1's two bytes per column,
-and type 1 is the only type the bisection ever ran. This file then said type 2's ceiling
-was that budget at three bytes, **493 columns**. It is not. The device buffers an image
-column as a 32-bit word and wraps at 384, so type 2 stops at **383 columns** and answers
-`ERROR` above it. *Corrected a third time:* 383 is what `DATCP` accepts, and only the
-first **24** columns are ever displayed, so 24 is the number content is sized against.
-`content.maxColumns(type)` is the figure to quote and gives 740 / 24;
-`content.IMAGE_ACCEPT_CEILING` is the 383. `MAX_SAVED_BYTES` is what was measured, and it
-is a type 1 measurement.
-
-**Type 2 does not persist**, which the flash-wear budget below never accounted for. Only
-type 1 reaches the flash writer; type 2 stops in RAM and is shown by mode 26, exactly as
-`SMVEW 02` does. So a greyscale save survives a disconnect and not a power cycle, costs
-no flash wear, and need not be charged to the ledger. Since `savedType()` picks the type
-from whether the content has grey in it, one grey pixel decides which of those a save is,
-and no reply from the device distinguishes them. *derived*,
-`research/firmware-internals.md`.
-
-Both gaps here are now closed. `session.save()` takes a `type` option, and type 2 above
-the vendor's 72 bytes was verify item 4 and is verified: 383 columns accepted, 384
-refused, no flash written, and the image on the panel with its greyscale intact.
+**Type 2's ceiling was wrong three times, and each wrong number had its own reason.**
+**493** came from dividing type 1's measured 1480-byte budget by three bytes a column, and
+that budget was only ever measured at type 1's stride. **383** is the real accept ceiling,
+since the device buffers an image column as a 32-bit word and wraps at 384: right about
+`DATCP` and wrong about the panel. **24** is what actually displays, and is therefore what
+content is sized against. `content.maxColumns(type)` gives 740 / 24, and
+`content.IMAGE_ACCEPT_CEILING` is the 383.
 
 ### The connection state machine
 
@@ -462,37 +339,9 @@ not try to be clever about restoring, because it cannot.
 
 ### The coalescing live sender
 
-This is the piece live draw actually needs, and it is worth building properly because the
-naive version fails in a way that looks like broken hardware.
-
-**The failure mode:** write-without-response has no flow control. A finger dragging across
-the canvas generates touch events far faster than 7 ms per column, so a queue-everything
-sender overruns the controller and columns are silently dropped, leaving stale pixels lit.
-The user sees their drawing come out wrong and blames the panel.
-
-**The design:** never queue frames, only ever a desired state.
-
-- The UI writes into a `desired: Grid`. It never sends anything.
-- One sender loop holds `lastSent: Grid`, diffs against `desired` with the existing
-  `Grid.deltaFrames()`, and writes the changed columns one at a time, paced.
-- New touches during a send simply update `desired`. Intermediate states are skipped, not
-  queued, so a fast drag lands as one correct final frame rather than a backlog.
-- **The last write of a batch goes with response**, so a frame cannot be half-delivered if
-  the user disconnects immediately after. `Glasses.show()` already does this.
-
-Two effects worth knowing. A fast scribble skips intermediate frames, which is correct and
-invisible. A "fill the canvas" button touches all 24 columns and will sweep, which is the
-hardware, not the sender. Clear is the exception: **`CLRL` clears the live buffer in a
-single atomic write**, so make the clear button use it rather than sending 24 blank
-columns.
-
-**Built**, as `packages/core/src/sender.ts`, `LiveSender`. Two departures from the design
-above, both deliberate. It picks the next column *after every write* rather than diffing a
-whole frame up front, so `Grid.deltaFrames()` is not used: a touch arriving mid-batch is
-picked up on the next write instead of after the batch it arrived during, and a column
-touched and untouched again during one write is never sent at all. And it keeps `sent` as
-what has been *acknowledged* rather than what has been handed to the transport, so
-`pending` counts the write in flight. Tested against `mock-transport.ts` only.
+Built as `packages/core/src/sender.ts`, whose docblock has the failure mode it exists to
+avoid and the two places it departs from the design sketched here. What does not belong
+in code is why an option nobody has needed is still there:
 
 `clear({ atomic: false })` writes 24 blank columns instead of `CLRL` and exists as a
 hedge, but the hedge is probably unnecessary: **`SMVEW 01` clears by branching into the
@@ -504,23 +353,16 @@ that happen.
 
 ### The draw canvas
 
-- 9 rows x 24 columns, and it spans **both lenses** with the nose bridge in the middle
-  (*derived*, and settled by one hardware test, see "Verify before building").
 - **Render the dead pixels as unavailable**: the middle 6 of the top row, and the
-  nose-bridge notch. `display.alive()` already maps them. Users must not be able to paint
-  into the void and wonder why it did not show.
-- **Rows 2 to 7 are the only band alive across all 24 columns.** Mark that band in the UI,
-  because anything outside it gets chewed passing the bridge.
+  nose-bridge notch. Users must not be able to paint into the void and wonder why it did
+  not show. Mark the rows 2 to 7 band too, because anything outside it gets chewed
+  passing the bridge. `display.alive()` is the only source for both, so neither can drift.
 - Brush levels 0 to 3, but **the steps are subtle** (*verified*: six-column bands were not
   separable, wider bands with dark separators were). Present grey as shading, not as four
   distinct colours, and do not build a feature that needs the user to read a level at a
   glance.
 
 #### Built and drawn on, 2026-08-09
-
-`packages/app/src/draw/`: `canvas.ts` is the arithmetic, `Pad.tsx` the touch surface,
-`Draw.tsx` the screen. All four points above are in it, and the band is derived from
-`display.alive()` rather than written down so it cannot drift from the mask.
 
 **A finger has been on it, and the wire log says so.** *Corrected: this section said the
 screen had never been rendered, which was true for about half an hour.*
@@ -544,30 +386,23 @@ of the pad is the top row of the glasses, whether the three greys separate, and 
 tests over the hit test, the stroke interpolation and the columns that reach the wire,
 plus `tsc` and an `expo export` that proves Metro resolves the `.tsx` files.
 
-Three decisions worth not re-making:
-
-- **Touch samples are joined with Bresenham.** A drag reports one cell per frame and
-  painting only what was reported draws a dotted line. Lifting the finger ends the
-  stroke, or the next touch draws a line across the panel to where it started.
-- **The holes are refused at paint time, not at hit-test time.** A stroke across the
-  nose bridge has to come out the other side, so being over a dead pixel is a fact about
-  the pixel and not about the touch.
-- **The pixel grid takes no touches** (`pointerEvents="none"`). `locationX` is relative
-  to whichever view was touched, so 216 touchable children would resolve every touch to
-  cell 0 - which looks like a broken hit test rather than a layout mistake.
-
-`Glasses.live()` is new in `core/src/session.ts` and is how a screen gets a sender: the
-transport and the cipher are private to the session, and a screen that re-derives the
-cipher on a crew unit writes frames the device silently ignores.
-
 **Not built, and not in this track's contract: saving a drawing.** Type 2 is 24 columns
 and does not persist, so "save this drawing" is a decision about what the button
 promises rather than an encoder change.
 
+*Decided, 2026-08-11, by track 17: the button promises the phone, not the glasses.*
+`packages/app/src/library.ts` keeps drawings and text presets in `library.json`, and Load
+replays a drawing through the live columns. The device was never a candidate. A type 2
+save would show a 24-column drawing whole and with its greys, but track 5 settled that it
+dies at power-off and that any later `MODE` discards it for good, and there is one buffer
+per type, so the glasses can hold exactly one drawing until they are switched off. Type 1
+is the one that lasts and it flattens the grey a drawing is mostly made of. The increment
+2 row below, "save drawing as type 2", therefore describes a save that keeps nothing.
+
 ## Scope, by increment
 
-Tuesday is the target for increment 1. The architecture above is designed for all three,
-so 2 and 3 add screens rather than rework.
+Increments 1 and 2 have shipped, on and before 2026-08-11. The architecture above was
+designed for all three, so 3 adds screens rather than rework.
 
 | # | Ships | New work |
 | --- | --- | --- |
@@ -579,19 +414,116 @@ Four screens at increment 2: **Scan**, **Compose** (text), **Draw** (canvas), **
 (what is on the device, direction, speed, brightness, disconnect).
 
 **Android first, deliberately.** Sideloading an APK is minutes; iOS needs provisioning and
-a free Apple account gives 7-day builds that expire. If Tuesday is real, iOS is what slips.
+a free Apple account gives 7-day builds that expire. Increments 1 and 2 ran on a Pixel and
+iOS is untouched, which is the trade taken on purpose.
 
-**Start the dev client build before the extraction, not after it.** It is the long pole and
-it is mostly waiting rather than working: `expo install`, `expo prebuild`, then an EAS
-build that takes 10 to 20 minutes and either produces an installable APK or does not. The
-extraction is laptop work that cannot fail in an unrecoverable way. Running the build first
-means a broken toolchain is discovered on Sunday evening with the fallback still open,
-rather than at the Monday midday checkpoint when there is no longer an afternoon to spend.
+## The redesign, 2026-08-11
 
-**The fallback that de-risks the deadline.** If the native build fights back, a Bun HTTP
-server on the laptop with a mobile web UI driving the existing noble transport gets a
-phone-shaped remote with zero native tooling. Not the product, needs the laptop in range,
-costs an afternoon. Decide by Monday midday.
+Track 26, single-instance. The intake is the second feedback table in
+`notes/what-to-build.md`; the verdict driving it is "its almost like the whole app needs
+a redesign". Everything above this section still holds underneath: the routes, the
+budget, the safety rules. What changes is the shape a person meets.
+
+**The governing scenario is a festival, not a desk.** Jacob, mid-redesign: "think they
+will be used at a festival where ease of use when i am out using them i really
+important". So the design target is a dark field, one hand, a few seconds of attention:
+big touch targets, one tap from opening the app to something on the glasses, the
+remembered pair reconnected without ceremony, and defaults already applied. Anything
+that only matters at a desk (tuning an effect, reading the wear log) may cost more taps.
+
+**The organising decision: the library is the front door.** The app opens on everything
+showable, mine and the built-ins, each with a thumbnail, and one tap shows it. Creating
+anything is a detour that ends back in the library. Before this the app opened on the
+protocol: a compose form whose controls were the wire's parameters (Motion, Direction,
+Speed, Ink, Panel) and whose captions were the research's own doubts.
+
+**Every pair is its own thing on this phone.** Three per-pair facts, all keyed on the
+advert name the ledger already uses: a nickname (built, track 10), an accent colour
+that recolours the whole app while that pair is connected, so a glance says which pair
+you are driving, and what that pair is holding, which is the residency model below
+applied per device. Deleting is a first-class action on every library item, not a
+privilege of drawings.
+
+**Navigation is three tabs, not headers.**
+
+| Tab | What it is | Needs a pair? |
+| --- | --- | --- |
+| **Library** | the front door: my saved things, then the built-ins. One tap shows one | only to show |
+| **Create** | Message, Draw or Effect. Each ends in Show plus Keep (save to the library) | only to show |
+| **Glasses** | find and connect, brightness, what the panel is doing, wear, disconnect | is the pair |
+
+Library and Create browse, compose, draw and save with nothing connected, because a
+library you cannot look at without hardware is not a library (review 17's lesson,
+promoted to the whole app).
+
+**One tap, and what a tap may cost.** The routing is a pure planner, not screen logic:
+
+- A free tap just goes. Built-ins are one command; a static that fits the panel goes
+  live; content already resident in flash returns with `SPEED` then `MODE` and no save.
+- A tap that writes flash also just goes. *Corrected 2026-08-12, by Jacob's ruling on
+  the handset: this said a flash tap opens a cost sheet, keeping the repo's law that
+  cost is stated before it is spent. That law was written against the runaway table in
+  "Flash wear", and the same table says human taps never matter: 500 days at 20 saves a
+  day, pessimistically. The ceremony was the cost. The budget guard stays in code,
+  where the actual risk (loops) lives; the UI neither asks nor prices, and the wear
+  numbers live on the Glasses tab for whoever wants them.*
+- Cancel stays free to the last block inside `deliver()`, but with no sheet there is
+  no cancel affordance in normal use, deliberately: an upload is seconds long.
+
+**Residency: the device remembers one saved thing, and the app now says so.** The
+ledger's last acknowledged type 1 record (the same `residentHash` reading the playlist
+uses) drives an "on the glasses" badge in the library, and drives the router above: a
+tap on the resident item is free and says so. This answers, in the UI, the question
+Jacob asked in words: save an animation, show something else, and the animation is
+still in flash; one free command returns to it; only saving something different evicts
+it, and re-sending the identical thing is skipped free.
+
+**Defaults persist.** A third phone store, `settings.json`, same temp-and-rename policy
+as the other two: panel brightness, scroll speed, and nothing else until something
+earns its place. Brightness is applied once on connect, so "why do I have to select
+panel setting each time" stops being true.
+
+**The copy budget.** A control's caption is a few words. The one full sentence appears
+on the step that spends flash, and nowhere else. The research's epistemics never reach
+the screen: uncertainty is phrased as behaviour ("Right to left repeats cleanly; left
+to right shows a gap"), never as provenance ("unconfirmed", seam numbers, hash lines).
+The provenance stays in `research/` where it belongs. The wear count moves to the
+Glasses tab, small, with the save log behind a tap.
+
+**Direction: default to the one that hides the dead space.** Watched by eye 2026-08-11
+and written down correctly on the third try (`notes/what-to-build.md`, second table):
+both directions carry the store's blank bracket as a dead pass, and direction only
+decides where in the pass it falls. So the default is the direction that puts the dead
+space at the end of a pass rather than the start, the other is offered as behaviour
+("the pause comes first"), and no epistemic caption. Removing the dead space entirely
+is firmware work, not app work.
+
+**What stays the same underneath, deliberately.** `deliver()` remains the only route to
+the wire for content and `wiring.test.ts`'s invariant survives the move; the budget
+choke point is untouched; browsing still writes no flash; Draw still never sends
+`MODE`; the discard warning still fires once before the first save that throws away a
+live panel. The redesign is screens plus a few small pure modules (settings, the tap
+planner, residency), not a protocol change.
+
+**What this redesign cannot fix, and who does.** "Animations seem buggy" needs eyes on
+the panel: no effect has ever been watched, the `ANIM` numbering is disputed, and the
+loop bracket's open half is track 16's two looks. All of that is the hardware sitting,
+which single-instance mode schedules with Jacob watching.
+
+### Built, 2026-08-12
+
+All of the above landed in one pass, plus three rulings from `notes/library.md` that
+arrived mid-build and were folded in rather than queued: text picks its own motion
+with the 24-column price boundary shown while typing, the effects width control was
+deleted (loops render at the ceiling; duration is the label), and no 9-row scrolling
+font. The mid-session asks landed too: per-pair accent themes, delete on every
+library item, per-pair residency ("holding" on the Glasses tab and the badge in the
+library), and auto-reconnect to the remembered pair.
+
+State and file-by-file detail: `.claude/locks/track-26`. Suite 720 green, `tsc`
+clean, `expo export` bundles. **Nothing has been seen on a handset**: every claim is
+the wire under bun plus the code, which by this repo's own convention means the
+looking is still owed, and it is the first item of the sitting.
 
 ## The stack decision
 
@@ -614,10 +546,6 @@ Node. That assertion is load-bearing for this whole row of the table.
 
 **Expo Go will not work.** BLE is native, so it needs a dev build on the device from day
 one. Budget for that; it is the most likely thing to eat a day.
-
-The ble-plx adapter does three things noble does not: base64 in and out of every write
-(hand-rolled, 20 lines, no dependency), permissions before the first scan, and **still
-exactly one 16-byte block per write** no matter what MTU was negotiated.
 
 ## Safety: where to be careful
 
@@ -654,45 +582,30 @@ Nothing in this app needs firmware. Stock units do all three features, so this c
 
 ### 2. `DATCP` is a flash write. One caller, rate limited, counted
 
-Five page erases per call regardless of payload size, no wear levelling, and no way to
-read the remaining cycles off the device. Reasoning, numbers and the runaway causes are in
-"Flash wear" at the top of this file. **It is the second-worst thing this app can do to a
-unit and the only one it does on purpose**, so it ships with enforcement rather than
-intent.
+**It is the second-worst thing this app can do to a unit and the only one it does on
+purpose**, so it ships with enforcement rather than intent. Reasoning, numbers and the
+runaway causes are in "Flash wear" at the top of this file; the rules themselves are
+`budget.ts` `LIMITS`, `session.save()` and `choke-point.test.ts`.
 
-Acceptance criteria for the increment that first sends `DATCP`, all of them:
+Acceptance criteria for the increment that first sends `DATCP`. All ticked, and the list
+has moved into `budget.ts` except for the two entries that record something it cannot:
 
-- [x] `datsComplete()` has exactly one caller in the codebase, and a test asserts it
-- [x] the guard enforces identical payload, 3 s interval, 30/hour, 200/day.
-      *Corrected: this line used to say "throws on identical payload", which contradicts
-      the table above. A duplicate **skips**, because writing flash to store what is
-      already stored is the thing worth avoiding, and the table is the specification*
-- [x] the guard lives in `packages/core`, so the CLI obeys it too
-- [x] no save is reachable from a React effect, a timer, or a retry without a ceiling.
-      The app's only save is `deliver()` called from one `onPress`; it does not retry,
-      and the button refuses for `LIMITS.intervalMs` afterwards so an impatient double
-      tap is a busy button rather than a thrown guard
-- [x] the per-device ledger persists and the About screen shows the lifetime count.
-      `packages/app/src/ledger.ts` over expo-file-system, keyed by advert name, holding
-      the app's one `FlashBudget` at module scope so a reconnect cannot mint a fresh
-      allowance. The count is on the Compose screen, not behind a menu. *verified*: one
-      save from the phone, `{"lifetime":1,...,"ok":true}` read back off the handset
-- [x] `uploadbench.ts` prints its cost and requires a flag
+- [x] *Corrected: this list used to say the guard "throws on identical payload", which
+      contradicted its own rate table. A duplicate **skips**, because writing flash to
+      store what is already stored is the thing worth avoiding, and the rate rules are
+      the specification*
+- [x] the per-device ledger persists and the About screen shows the lifetime count, on
+      the Compose screen rather than behind a menu. *verified*: one save from the phone,
+      `{"lifetime":1,...,"ok":true}` read back off the handset
 
 Everything else the app does, including the whole of live draw, writes no flash at all.
 
 ### 3. The DATS row mapping was wrong in `dats.ts`. Fixed, and still needs one upload
 
-**Done in code.** `encodeBitmap` mapped row `r` to bit `r` for rows 0 to 6 and to bit `r+1`
-above, which is the 7+7 reading from `notes/protocol.md`. `research/firmware-internals.md`
-corrects that, corroborated from two independent firmware paths:
-
-| Upload bit | Panel row |
-| --- | --- |
-| 0 to 6 | rows 1 to 7 |
-| 7 | **row 8** |
-| 15 | **row 0** |
-| 8 to 14 | nothing |
+**Done in code**, and the mapping table is `dats.ts`. `encodeBitmap` used to map row `r`
+to bit `r` for rows 0 to 6 and to bit `r+1` above, which is the 7+7 reading from
+`notes/protocol.md`; `research/firmware-internals.md` corrects it from two independent
+firmware paths.
 
 Under the old mapping a 9-row bitmap drew **one row too high** and **silently discarded
 rows 7 and 8**. It never bit us because every upload so far has been text, and the font is
@@ -700,19 +613,9 @@ five rows (`font.HEIGHT`), so the only symptom was a one-row offset nobody would
 *Corrected: an earlier version of this file said seven-row text, which is the DATS format's
 old imagined half rather than anything we have ever rendered.*
 
-`dats.ts` now encodes and decodes the corrected mapping, `DATS_ROWS` is 9 rather than 14,
-and `dats.test.ts` asserts each of the four rows of that table separately instead of the
-old 7+7 shape.
-
 **It is still *derived*.** Two firmware paths agree and no hardware has confirmed it, so
 the verify list keeps its place at number 1. If row 8 does not light, `dats.ts` and its
 test are what change, and nothing built on top of them has to move.
-
-**Rows are panel rows now, which makes placement someone's job.** `font.textBitmap` returns
-only the five rows the glyphs occupy; feeding that straight to `encodeBitmap` puts text at
-rows 0 to 4, and rows 0 and 1 are the nose notch. `font.panelBitmap(text)` places them at
-`BASELINE`, giving rows 2 to 6, inside the band that is alive across all 24 columns. **The
-preview must call the same helper**, or the phone shows text the panel will not draw.
 
 ### 4. The preview masks at panel coordinates, and the content scrolls through them
 
@@ -728,19 +631,16 @@ problem, because there the content genuinely is 24 columns and the coordinates c
 ### 5. `protocol.ts` `scrollLeft`/`scrollRight` emitted the wrong command
 
 **Done in code.** `scrollLeft(s)` built `MODE 03 s`, which is the **vertical** bounce, and
-`scrollRight` built `MODE 04`, which the argument parser rejects outright. `protocol.mode(kind,
-dir)` replaces both, plus `modeStatic` and `modeFlash`: kind 1 static, 2 horizontal, 3
-vertical, and `dir` is a boolean the firmware tests only for zero versus non-zero.
+`scrollRight` built `MODE 04`, which the argument parser rejects outright.
+`protocol.mode(kind, dir)` replaces both.
 
 **The same table has more traps than that one.** The firmware handles exactly eleven
 opcodes; the helpers transcribed from the vendor app's table are a much longer list, and
-the extras reach no handler at all. `queryType`, `invert`, `stopRhythm`, `leds` and
-`flashlight` build frames the device silently discards, and there is no lens select, so
-`lens()` never did anything. They are grouped and labelled in `protocol.ts` rather than
-deleted, because the decoders still have to name what the vendor app sends. **No UI control
-may be built on one**: a Playing screen with an LED on/off toggle ships a dead button, and
-`LEDOFF` in particular reads as "the panel should go dark" and does nothing. The atomic
-clear is `CLRL`, now `protocol.clear()`.
+the extras reach no handler at all. They are grouped and labelled in `protocol.ts` rather
+than deleted, because the decoders still have to name what the vendor app sends. **No UI
+control may be built on one**: a Playing screen with an LED on/off toggle ships a dead
+button, and `LEDOFF` in particular reads as "the panel should go dark" and does nothing.
+The atomic clear is `CLRL`, now `protocol.clear()`.
 
 ### 6. Do not let the OS kill the app mid-handshake
 
@@ -813,42 +713,47 @@ live sender was built and turned out to rest on two figures nobody has measured.
    `dats.ts` already encodes the corrected mapping, so the test is now `bun run
    packages/cli/src/upload.ts` with a bitmap whose only set pixel is row 8: if the top row
    lights, the mapping is settled and the code needs no change.
-2. **Light column 0 only, see which lens it lands on.** Decides whether the draw canvas is
-   one 24-wide surface across both eyes or two mirrored 12-wide ones. It is the difference
-   between one canvas and two, so it is a UI decision, not a detail.
-3. **`MODE 02 <dir>`** horizontal scroll on our own uploaded content, both directions.
+2. ~~**Light column 0 only, see which lens it lands on.**~~ **Done, 2026-08-12: ONE
+   column, at the leftmost edge**, so the panel is a single 24-wide surface across both
+   eyes and the draw canvas is right as built. Two mirrored 12-wide surfaces would have
+   lit a column on each lens. *One ambiguity survives*: "leftmost" was reported without
+   saying whether the glasses were worn or held facing, which swaps left and right, so
+   **which end** column 0 sits at is still *derived*. `research/vendor-app-protocol.md`,
+   "The sitting".
+3. ~~**`MODE 02 <dir>`** horizontal scroll on our own uploaded content, both
+   directions.~~ **Done, 2026-08-12: dir 0 travels left, dir 1 travels right**, both
+   watched, and dir 1 had never been sent to a device before that evening. Both show the
+   panel go fully dark between passes, which is the blank bracket on content restored
+   from flash with no save in the session. **The bracket's size is still open** and this
+   look cannot settle it: the payload in flash carries a 10-column blank run of its own,
+   so what was seen is content blanks plus the device's. The clean subject is the
+   240-column loop already on the wire from 2026-08-11 23:46.
 4. ~~**DATS type 2 at exactly 72 bytes**, then over 72.~~ **Done, 2026-08-09, and the
-   answer is no.** Over 72 is *accepted* to 383 columns, `ERROR` from 384 (device
-   replies, solid), but **only the first 24 columns are ever displayed** (read off the
-   panel by eye, and a null observation: caveat and the harder test in
-   `research/firmware-internals.md`), so a greyscale drawing cannot be wider than the
-   panel. Wide drawings have to go as type 1 and lose their grey. Three more things the
-   item did not ask, all of which shape the screen: the image **displays on `DATCPOK`
-   with no `MODE`**; any `MODE` after it switches to the type 1 flash store **with no way
-   back**, so a drawing screen must not send one; and type 2 **writes no flash**, so it
-   does not survive a power cycle. What type 2 is actually good for is a whole 24-column
-   greyscale frame with **no left-to-right sweep**, which no other path offers for
-   arbitrary pixels. `bun run packages/cli/src/type2.ts` reproduces all of it.
+   answer is no.** Over 72 is accepted to 383 columns and `ERROR` from 384, but **only the
+   first 24 columns are ever displayed**, so a greyscale drawing cannot be wider than the
+   panel and wide drawings go as type 1 and lose their grey. The verdict, the three things
+   the item did not ask, and the null-observation caveat are in
+   `packages/core/src/content.ts` and `research/vendor-app-protocol.md`; `bun run
+   packages/cli/src/type2.ts` reproduces all of it.
 5. **`MODE 02` on content narrower than the panel.** Upload 10 columns and scroll them.
    Nothing says the firmware handles content shorter than one screen, and "HI" is the
-   first thing anyone will type on Tuesday. If it misbehaves, the fix is to pad every
-   upload to 24 columns, which is a renderer decision and cheaper to make now than to
-   retrofit through the content model.
-6. **`CLRL` alone, mid-session, with the panel lit.** The clear button is one write and
-   the whole draw screen's "start again". Enter DIY, draw a few columns with
-   `LiveSender`, send `clear()`, watch. It is the same code `SMVEW 01` runs, so the
-   expected answer is yes; if it is no, `clear({ atomic: false })` is already the
-   fallback and the option stops being a hedge and becomes the default.
-   **The send half happened on 2026-08-09** and the item still stands: the draw screen's
-   clear button put `CLRL` on the wire by itself, 56 seconds into a session with 210
-   columns drawn and the panel therefore lit (`packages/app/.expo/dev/logs/start.log`).
-   Nobody said what the panel did, which is the entire question, so this stays open and
-   the next person to try it needs only to look.
-7. **How low live pacing goes.** 18 ms per column is copied from `Glasses`, never
-   measured, and it is 430 ms for a whole-panel change against ~168 ms at the ~6.5 ms
-   floor the firmware implies. Bisect `LiveSender`'s `pacing` with alternate columns lit
-   so a dropped write shows, and read the end state rather than the sweep. Full method in
-   `research/vendor-app-protocol.md`, "The live channel has no measured pacing floor".
+   first thing anyone will type. If it misbehaves, the fix is to pad every upload to 24
+   columns, which is a renderer decision and cheaper to make now than to retrofit through
+   the content model.
+6. ~~**`CLRL` alone, mid-session, with the panel lit.**~~ **Done, 2026-08-12: the panel
+   went dark and stayed dark.** Three bars drawn, then `CLRL` alone with nothing after
+   it. So the draw screen's clear works, `LiveSender` marking all 24 columns blank
+   afterwards is true rather than hopeful, and `clear({ atomic: false })` stops being a
+   hedge worth keeping. **Not established: whether it clears at once or wipes across**,
+   so the word "atomic" in that path is still *derived*.
+7. ~~**How low live pacing goes.**~~ **Done, 2026-08-12: 6 ms holds, 12 of 12 columns,
+   nothing dropped.** So the 18 ms copied into `Glasses` is three times more
+   conservative than the hardware needs: a whole-panel live change is 144 ms rather than
+   430 ms, and on the bulk path the same headroom is a ~2 s full-width upload rather
+   than ~6 s, which is the wait behind "it seems to keep having to send the animation to
+   the device". **Record it as a bound, not a constant**: BLE negotiates its interval per
+   connection, so take most of the win and keep headroom rather than sitting on the
+   measured edge. Nothing below 6 ms was tried.
 
 ## Deliberately not in this app
 

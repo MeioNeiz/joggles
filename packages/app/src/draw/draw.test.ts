@@ -7,11 +7,16 @@
  * `Canvas.drag`, `LiveSender.set` - and asserts the columns that come out, because
  * a drawing that is one column off still looks like a drawing.
  *
+ * The last two tests run the Load chain the same way, through a real JSON round trip,
+ * because a library is only worth having if what comes back is what went in.
+ *
  * The React half is deliberately absent. Everything below `onCell` is here.
  */
 import { LiveSender, display, protocol as p } from '@joggles/core'
 import { MockTransport } from '@joggles/core/src/mock-transport.js'
 import { expect, test } from 'bun:test'
+import { Library } from '../library.js'
+import type { LibraryStore, SavedDrawing } from '../library.js'
 import { Canvas, type Cell, cellAt } from './canvas.js'
 
 /** A pad ten units to the cell, as `Pad` measures it after layout. */
@@ -156,6 +161,68 @@ test('loading a saved drawing writes its lit columns and nothing else', async ()
   expect(wordFor(t, 3)).toBe(display.PIXEL_ON << (display.STRIDE * 4))
   expect(wordFor(t, 20)).toBe(display.PIXEL_DIM << (display.STRIDE * 6))
   expect(t.writes.at(-1)?.withResponse).toBe(true)
+})
+
+/** Through JSON, so what a test loads is what the phone's file would have held. */
+const jsonStore = (): LibraryStore => {
+  let data: unknown = null
+  return {
+    async load() {
+      return data
+    },
+    async save(items) {
+      data = JSON.parse(JSON.stringify(items))
+    },
+  }
+}
+
+test('a saved drawing comes back with its greys, on the columns it was drawn on', async () => {
+  const canvas = new Canvas()
+  const lib = new Library(jsonStore())
+  canvas.paint({ row: 3, col: 6 }, display.PIXEL_DIM)
+  canvas.paint({ row: 5, col: 18 }, display.PIXEL_ON)
+  const saved = await lib.saveDrawing(canvas.levels())
+
+  // A later session: a fresh canvas and a fresh sender, believing nothing is lit.
+  const t = new MockTransport()
+  const back = new Canvas()
+  const sender = new LiveSender(t, { pacing: 0 })
+  const item = (await lib.get(saved.id)) as SavedDrawing
+
+  expect(back.load(item.levels)).toBe(true)
+  sender.set(back.snapshot())
+  await sender.idle()
+
+  // The grey is the point: it is why the phone holds the library rather than the
+  // flash store, which would have flattened this to two plain-on columns.
+  expect(indices(t)).toEqual([6, 18])
+  expect(wordFor(t, 6)).toBe(display.PIXEL_DIM << (display.STRIDE * 3))
+  expect(wordFor(t, 18)).toBe(display.PIXEL_ON << (display.STRIDE * 5))
+  expect(t.commands).toEqual([])
+})
+
+test('a hand-edited drawing that lights a hole reaches neither the pad nor the wire', async () => {
+  const canvas = new Canvas()
+  const lib = new Library(jsonStore())
+
+  // What `revive()` cannot catch: (0, 12) is the nose notch, and the shape and the
+  // levels are both legal, so the library keeps it and `Canvas.load` is the last
+  // refusal before a column the panel cannot show goes out.
+  const levels = canvas.levels()
+  levels[0][12] = display.PIXEL_ON
+  levels[4][2] = display.PIXEL_ON
+  const saved = await lib.saveDrawing(levels)
+  const item = (await lib.get(saved.id)) as SavedDrawing
+  expect(item.levels[0][12]).toBe(display.PIXEL_ON)
+
+  const t = new MockTransport()
+  const sender = new LiveSender(t, { pacing: 0 })
+  expect(canvas.load(item.levels)).toBe(true)
+  sender.set(canvas.snapshot())
+  await sender.idle()
+
+  expect(indices(t)).toEqual([2])
+  expect(canvas.levels()[0][12]).toBe(0)
 })
 
 test('a dead link tells the screen once, and the sender stays dead', async () => {

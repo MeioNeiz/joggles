@@ -472,3 +472,16 @@ test('pending counts what is still owed', async () => {
   await drain(t, s)
   expect(s.pending).toBe(0)
 })
+
+test('the default pacing is the measured one, in one place', () => {
+  // Two copies of a timing constant is how one of them stays at a number nobody has
+  // checked, which is exactly what happened to the 18 ms this replaces: it was copied
+  // from an early script into both files and sat there unmeasured for days.
+  const t = new MockTransport()
+  const s = new LiveSender(t)
+  expect((s as unknown as { pacing: number }).pacing).toBe(p.PACING_MS)
+  // Slower than the hardware floor by design: 6 ms was proven on one link in one room,
+  // and a dropped column produces no error anywhere.
+  expect(p.PACING_MS).toBeGreaterThan(6.4)
+  expect(p.PACING_MS).toBeLessThan(18)
+})

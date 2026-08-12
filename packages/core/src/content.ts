@@ -34,7 +34,7 @@
  */
 import * as dats from './dats.js'
 import { COLS, Grid, MAX_LEVEL, ROWS } from './display.js'
-import { panelBitmap } from './font.js'
+import { type Font, panelBitmap, panelFor } from './font.js'
 
 /** `[row][col]`, values 0-3, row 0 is the BOTTOM row. Same as everywhere here. */
 export type Bitmap = number[][]
@@ -158,6 +158,42 @@ export function pad(bitmap: Bitmap, to: number): Bitmap {
   return bitmap.map((row) => [...row, ...new Array(to - cols).fill(0)])
 }
 
+/**
+ * Where a piece of `cols` starts when it is centred in `to`. **Ties go left.**
+ *
+ * The panel is symmetric about column **11.5**, not about a column: `display.DEAD`
+ * puts its holes at cols 9-14 of the top and bottom rows and 10-13 of row 1, all
+ * centred on 11.5, and `effects.mirrorFolds` snaps its fold axis to the same place. So
+ * a piece of odd width cannot sit on the centre line and one of the two neighbouring
+ * columns has to be picked. Left, for two reasons worth keeping: it is the smaller
+ * change from the left alignment it replaces, and text reads left to right, so the
+ * spare column belongs after the words rather than before them.
+ */
+export const centreOffset = (cols: number, to: number): number =>
+  Math.max(0, Math.floor((to - cols) / 2))
+
+/**
+ * Centre a bitmap horizontally in `to` columns. Never truncates, exactly as `pad`.
+ *
+ * Static text used to be right-padded to the panel, so a short word sat hard against
+ * the left lens and read as a rendering fault rather than as a choice (Jacob, during
+ * the 2026-08-12 sitting: "text should be centered if its static, like centered
+ * horizontally"). **Scrollers keep the pad**, because a scroller's left edge is where
+ * the pass begins and `viewport`'s whole account of the loop gap is written against a
+ * trailing pad.
+ */
+export function centre(bitmap: Bitmap, to: number): Bitmap {
+  const cols = width(bitmap)
+  if (cols >= to) return bitmap.map((row) => [...row])
+  const left = centreOffset(cols, to)
+  const right = to - cols - left
+  return bitmap.map((row) => [
+    ...new Array(left).fill(0),
+    ...row,
+    ...new Array(right).fill(0),
+  ])
+}
+
 /** Does any pixel sit at an intermediate level, so type 1 would lose something? */
 export const hasGrey = (bitmap: Bitmap): boolean =>
   bitmap.some((row) => row.some((v) => v > 0 && v < MAX_LEVEL))
@@ -191,16 +227,69 @@ export function fromGrid(grid: Grid): Bitmap {
   return Array.from({ length: ROWS }, (_, r) => [...grid.px[r]])
 }
 
+/**
+ * Blank columns `text()` appends after the content. Zero, and the reason is the
+ * device: **it supplies a screen's worth of gap by itself**, so a client gap is
+ * added to that one rather than instead of it.
+ *
+ * Measured, on wire-verified payloads (`research/loop-gap-2026-08-10.md`):
+ *
+ *     uploaded 27 columns, no client gap   panel showed ~24 blank, one screen width
+ *                                          (Jacob, by eye, 2026-08-11, *verified*
+ *                                          against the decoded save at 07:48)
+ *     uploaded 51 = 27 + a 24 client gap   the original "huge gap" complaint
+ *
+ * So what a viewer gets is `client gap + the device's own`, and the table that
+ * matters is what to ask for:
+ *
+ *     gap 0   the message clears the panel and comes straight back: one screen
+ *     gap 24  two screen widths of dark, which is what the complaint was
+ *
+ * Zero is therefore the default because it produces the *one screen width* that was
+ * asked for, not because a gap is unwanted. Anything wider is a per-call `gap`.
+ *
+ * **That table holds for content at least a panel wide, and `text()` below is the
+ * reason it has to say so**: it pads to `COLS` unconditionally, so a scroll of a word
+ * narrower than 24 columns carries `24 - width` blank columns inside its own bitmap
+ * and the panel is dark for that many steps plus one. Scrolling `HI` is 24 uploaded
+ * columns and 18 fully dark frames, not one. The padding is deliberate - whether
+ * `MODE` handles content narrower than the panel is verify item 5 and unrun - and it
+ * is `core/src/playlist.ts` that first wrote the consequence down. Nothing reaches it
+ * from the app, which picks scroll only past 24 columns, and a CLI caller can.
+ *
+ * **There is no client value that buys less than one screen** once the device has
+ * restored the save, so the seamless loops `effects.ts` builds are seamless only
+ * while the session that saved them lasts. Whether the device's contribution is
+ * conditional on that restore is the open question in the research file, and it is
+ * the only thing that would move this line: if the 24 turns out to be unconditional
+ * and `viewport` should stop modelling it, this stays 0 either way.
+ */
+export const SCROLL_GAP = 0
+
 export interface TextOptions {
   spacing?: number
   /**
-   * Blank columns appended, so a scrolling message does not run into its own
-   * start when the device wraps. A screen's width is the readable default.
-   * Whether the firmware wraps at all is *unverified*; the gap costs 48 bytes.
+   * Blank columns appended after the content, defaulting to `SCROLL_GAP` (0).
+   *
+   * This is **added to** the gap the device inserts, not instead of it: pass 24 for
+   * two screen widths of dark between repeats, not for one. `viewport.frames` with
+   * `loop: 'panel'` previews the sum, which is what a viewer sees.
+   *
+   * **Scroll only, since track 35.** A static piece has no repeat to separate, so a
+   * gap there would only push the word off centre; it is ignored rather than obeyed.
    */
   gap?: number
   /** Level to draw the glyphs at. Grey text is legal and saves as type 2. */
   level?: number
+  /**
+   * Which face to draw with. Defaults to `font.DEFAULT_FONT`.
+   *
+   * Routed through `font.panelFor`, so a face that cannot scroll (`tall7`, which steps
+   * its glyphs around the nose notch) is placed rather than baselined. **A stored item
+   * must pass the font it was saved with rather than relying on this default**, or
+   * every old message changes shape the day the default does.
+   */
+  font?: Font
   /** Live only reaches 24 columns, so anything longer must be saved. */
   route?: Route
 }
@@ -217,18 +306,20 @@ export function text(
   motion: Motion = { kind: 'static' },
   opts: TextOptions = {},
 ): Content {
-  const {
-    spacing = 1,
-    gap = motion.kind === 'scroll' ? COLS : 0,
-    level = MAX_LEVEL,
-    route = 'saved',
-  } = opts
-  const drawn = panelBitmap(body, spacing)
+  const { spacing = 1, gap = SCROLL_GAP, level = MAX_LEVEL, route = 'saved', font } = opts
+  // `panelFor` routes a non-scrolling face through `staticText`, which steps glyphs
+  // around the notch; the default path keeps `spacing`, which `panelFor` has no seat
+  // for and which nothing passes alongside a font.
+  const drawn = font ? panelFor(body, font) : panelBitmap(body, spacing)
   const lit = drawn.map((row) => row.map((v) => (v ? level : 0)))
-  // Padded to a full screen even when static: whether MODE handles content
-  // narrower than the panel is verify item 5 in notes/app-plan.md, unrun, and
-  // padding here is free where retrofitting it through the content model is not.
-  const bitmap = pad(pad(lit, width(lit) + gap), COLS)
+  // Widened to a full screen either way: whether MODE handles content narrower than
+  // the panel is verify item 5 in notes/app-plan.md, still unrun, and doing it here is
+  // free where retrofitting it through the content model is not.
+  //
+  // Where the slack goes differs, and that is track 35: a static word is CENTRED, and
+  // a scroller keeps its trailing pad because its left edge is where the pass begins.
+  const bitmap =
+    motion.kind === 'scroll' ? pad(pad(lit, width(lit) + gap), COLS) : centre(lit, COLS)
   return { bitmap: normalise(bitmap), route, motion }
 }
 
@@ -252,6 +343,35 @@ export function drawing(source: Bitmap | Grid, route: Route = 'live'): Content {
  */
 export const savedType = (content: Content): number =>
   hasGrey(content.bitmap) ? dats.TYPE_IMAGE : dats.TYPE_TEXT
+
+/** Whether anything at all is lit. Beside `hasGrey`, and read by the blank-save rule. */
+export const anyLit = (bitmap: Bitmap): boolean =>
+  bitmap.some((row) => row.some((v) => v > 0))
+
+/**
+ * Why a save of nothing is refused here rather than on a screen.
+ *
+ * review-13 found a **736-column loop with no lit cell in it offered for five page
+ * erases**, under the words "0% of the loop is lit" and a bright green Upload button:
+ * `mirror` with inner `ripple`, folds 10 and no dither renders nothing at any width,
+ * and `check` passed it. *verified* on the Pixel, 2026-08-11. The screen was fixed and
+ * then deleted by the redesign, which is the whole argument for the rule living here: a
+ * guard in a screen lasts exactly as long as the screen.
+ *
+ * **It is scoped to the one path that spends flash**, which falls straight out of
+ * `savedType`. Live costs nothing. A dark type 2 lands in RAM and is a legitimate way
+ * to blank the panel. Only type 1 on the saved route erases pages.
+ *
+ * **And it keeps a door, because a blanket refusal would remove a real capability.**
+ * There is no erase-store command anywhere in this protocol, so writing something dark
+ * over the store is the only way to clear it, and without that the phone's free `MODE`
+ * return is stuck showing the last save for ever. `EncodeOptions.blank: 'clear'` is how
+ * a caller says the dark panel is the point. It reads as intent at the call site rather
+ * than as a bypass flag, which is why it is not a boolean.
+ */
+export const BLANK_SAVE =
+  'nothing here is lit, so this save spends flash to leave the panel dark. Clearing ' +
+  'the saved store is the one good reason to do that, and it has to be asked for.'
 
 /**
  * Everything wrong with a `Content`, as sentences. Empty means it is sendable.
@@ -291,6 +411,21 @@ export function check(content: Content, opts: EncodeOptions = {}): string[] {
           : `saved route holds ${limit} columns at type ${type}, got ${cols}`,
       )
     }
+    // `cols > 0` because a zero-column bitmap already gets its own sentence above, and
+    // two messages for one situation is noise.
+    //
+    // Flattened, because that is what type 1 actually puts on the panel: a threshold
+    // above every level in the content leaves nothing lit, and reading the raw bitmap
+    // here passed the very save this rule exists to refuse. With no threshold the two
+    // agree, `flatten` defaulting to 1 and levels being integers.
+    if (
+      type === dats.TYPE_TEXT &&
+      cols > 0 &&
+      opts.blank !== 'clear' &&
+      !anyLit(flatten(bitmap, opts.threshold))
+    ) {
+      out.push(BLANK_SAVE)
+    }
   }
   if (route === 'live' && motion.kind === 'scroll') {
     // MODE displays the saved store and discards the live buffer, so asking the
@@ -329,6 +464,13 @@ export interface EncodeOptions {
    * silently does nothing, because grey content picks type 2 and keeps its levels.
    */
   threshold?: number
+  /**
+   * What a type 1 save with nothing lit means. Defaults to `refuse`.
+   *
+   * `clear` is the caller saying the dark panel is the point, which is the only way to
+   * empty the saved store on this protocol. See `BLANK_SAVE`.
+   */
+  blank?: 'refuse' | 'clear'
 }
 
 /**

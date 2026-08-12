@@ -25,6 +25,39 @@ is an extension appended in free flash plus the fewest possible hook patches.
 "Open gates" and "For the reviewer". Start there if you are checking soundness rather than
 reading front to back.
 
+## Whose glasses these are, and why modifying them is fair
+
+**Lead with it plainly, because reflashing a commercial product's firmware is not a neutral
+act and these docs should not pretend it is: this is a hobby project modifying glasses we
+bought and own, for our own use and interoperability, and every choice below is made to keep
+it fair to the vendor and safe for anyone wearing a pair.** The specifics, so the claim is
+checkable rather than asserted:
+
+- **Only our own units are ever flashed.** Flashing needs physical SWD access to a board in
+  hand (`research/hardware-access.md`), one device at a time. A stranger's pair is never
+  reflashed. The most we ever do to someone else's glasses is speak the stock BLE protocol
+  they already expose, temporarily and with consent (`notes/what-to-build.md`, "Controlling
+  other people's glasses").
+- **We do not redistribute the vendor's software.** The stock image, the decompiled app and
+  the native blobs are gitignored and never committed (`CLAUDE.md`, "Don't"). This repo
+  holds our own analysis and our own extension code, not the vendor's binaries; the build
+  patches a locally held stock image, it does not ship one.
+- **The work is interoperability and personal enhancement**, the long-accepted reasons to
+  reverse-engineer a device you own: understanding an undocumented protocol to build our own
+  controller, and adding features to hardware we paid for. It is not circumvention for
+  redistribution, nor for reaching anything that is not ours.
+- **The extension is deliberately respectful of the product.** It patches in place, never
+  relinks, and never touches the vendor's OTA service, BLE bring-up or the recovery path, so
+  a unit can always be returned to stock (`ota.check`, and the region guards in this file).
+  We change the least we can, not the most we can.
+- **The honest caveats, stated rather than buried.** Modifying firmware can void a warranty,
+  it carries a real bricking risk that has already cost one unit
+  (`research/brick-2026-08-08.md`), and the vendor did not design for any of this. Those
+  costs fall on us, the owners, and on nobody else, which is the line that keeps it fair.
+
+None of this is legal advice; it is the stance the project holds itself to, and the rest of
+the firmware docs are written to be consistent with it.
+
 ## "Properly" does not mean "from scratch"
 
 Building a fresh image means owning BLE bring-up, the OTA service and the vector table,
@@ -42,14 +75,19 @@ Everything below is the architecture of that extension.
 | Resource | Size | Source | Confidence |
 | --- | --- | --- | --- |
 | Free flash for appended code | 10,716 B, `abs 0x26a24` to `0x29400` | last non-zero byte `0x269e9`, staging bank at `0x29400` | *verified* |
-| Image ceiling before anything else is touched | 66,084 B (stock size) | leaves 10,716 B headroom | *verified* |
-| Free SRAM while not uploading | 1,536 B `DATS` buffer at `0x200030ac` | reusable as extension working memory | *derived* |
-| Stack headroom | ~268 B (app RAM to `0x20003804`, SP `0x20003910`) | so extension state cannot live on the stack | *derived* |
+| Stock image size, **not a ceiling** | 66,084 B | where the image ends is where free flash begins. The binding ceiling is the 76,800 B application region, see "Safety invariants". `joggles-v1` is 66,172 B | *verified* |
+| Free SRAM while not uploading | 1,536 B `DATS` buffer at `0x200030ac` | adjacency: `0x200030ac + 1536 = 0x200036ac`, exactly the live column buffer. Reusable as extension working memory | *verified* |
+| Stack headroom | ~268 B (app RAM to `0x20003804`, SP `0x20003910`) | so extension state cannot live on the stack. `research/firmware-internals.md`, "SRAM budget, confirmed" | *verified* |
 | Spare CPU per 100 fps frame | ~260,000 cycles, ~1,200 per pixel | 6.42 ms frame time at 26 MHz | *derived* |
 
 The constraint is SRAM, not flash or CPU. Any extension feature that needs working memory
 takes it from the 1,536 B `DATS` buffer, which is free whenever saved content is not in
 use, and must not assume the stack.
+
+*Corrected 2026-08-11: the second row read "image ceiling before anything else is touched
+| 66,084 B", which contradicted this file's own safety invariant. 66,084 is the stock
+length; any image carrying an extension is necessarily larger, and `joggles-v1` is 66,172,
+both *verified* against the built binary. The only ceiling that binds is 76,800.*
 
 ## The load-bearing decision: one opcode, a sub-command namespace
 
@@ -84,8 +122,9 @@ Reserve the sub-command space now so later work slots in without renumbering:
 
 The dispatcher is a flat chain of byte compares at `abs 0x18264` to `0x185a8`:
 `ldrb [frame+n]` then `cmp #<ascii>`. The opcode is at `[frame+2]` (`ldrb r2, [r4, #0x2]`
-at `abs 0x18280`). Length is gated first and must be 4 to 20, but it is read from a
-separate struct field at `[struct+0xfb]` (`abs 0x1826a`), **not** from `[frame+0]`.
+at `abs 0x18280`). Length is gated first and must be 4 to 20 inclusive, bounded at both
+ends, but it is read from a separate struct field at `[struct+0xfb]` (the sequence starts
+at `abs 0x18268`), **not** from `[frame+0]`. Decode in `research/firmware-internals.md`.
 *verified.* Two ways in, cheapest first:
 
 1. **Repoint the dead compare.** `research/firmware-internals.md` records a redundant
@@ -97,10 +136,15 @@ separate struct field at `[struct+0xfb]` (`abs 0x1826a`), **not** from `[frame+0
    bytes and keeps the opcode a distinct letter.
 
 Either way the hook must branch from the dispatch region near `abs 0x182xx` to the
-extension at `abs 0x26a24`, which is **34,690 bytes (~34 KB) away**, not the ~18 KB this
-document previously said. That is far beyond a short `B` (+/-2 KB), so it needs a `BL` or a
-literal-pool PC load, and the sequence must not clobber a register the dispatcher relies
-on after the call.
+extension at `abs 0x26a24`, which is **59,262 bytes (~58 KB) away**. That is far beyond a
+short `B` (+/-2 KB), so it needs a `BL` or a literal-pool PC load, and the sequence must
+not clobber a register the dispatcher relies on after the call.
+
+*Corrected 2026-08-11: this line has now carried two wrong figures, ~18 KB and then 34,690
+bytes, and **both were wrong**. `0x26a24 - 0x182a6` = 59,262, *verified*, and
+`research/firmware-internals.md`, "What patching would buy, ranked", had it right all
+along. No conclusion moves, since all three are far outside a short branch's reach, but
+this is the document reviewers start from and its arithmetic gets copied, not rechecked.*
 
 **Simplest hook: overwrite the `LOOP` block, and skip the dead compare entirely.**
 `abs 0x182a6` is the fall-through target for every unmatched opcode and runs 28 bytes to
@@ -113,17 +157,12 @@ arm, branches to **`abs 0x182aa`**, four bytes in, whenever an `L` opcode is not
 that back-branch is how `LOOP` was reached at all, and it is why the `cmp r2, #0x4c` at
 `0x182a6` was already dead code. With the naive layout, every `L???` frame would have
 fallen into `mov r0, r4` and run the trampoline on a frame that is not ours. What ships
-instead puts the epilogue branch exactly where the back-branch lands:
-
-    0x182a6  cmp  r2, #'J'             ; 2   only ever reached by fall-through
-    0x182a8  beq  0x182ac              ; 2
-    0x182aa  b    0x182c2              ; 2   unmatched; also where LIGHT lands
-    0x182ac  mov  r0, r4               ; 2   frame struct pointer as the argument
-    0x182ae  ldr  r1, [pc, #4]         ; 2
-    0x182b0  blx  r1                   ; 2
-    0x182b2  b    0x182c2              ; 2
-    0x182b4  .word <extension entry>   ; 4
-    0x182b8  nop x5                    ; 10  unreachable padding
+instead puts the epilogue branch **exactly at `abs 0x182aa`**, where the back-branch
+lands, compares for `J` at the top, and spends the tail on the literal and unreachable
+nops: 18 of the 28 bytes used, no branch island needed. The 14 halfwords are listed once
+in the repo, in `research/firmware-internals.md`, "Correction: the block has two entry
+points, and its first compare was already dead"; `research/tools/ext.ts` builds them and
+`ext.test.ts` asserts them against the image.
 
 An unmatched opcode and a non-`LIGHT` `L` frame both reach the epilogue, exactly as stock
 did once `LOOP` stopped existing; only `J` reaches us. The cost is `LOOP`, which only
@@ -135,9 +174,11 @@ on a flat compare chain with shared tails it is often false. Scan for branch tar
 inside any block before overwriting it. One `B` in 66 KB was the difference between a
 correct hook and a subtly wrong one.
 
-**ABI, *verified*:** the dispatcher's prologue is `push {r3,r4,r5,r6,r7,lr}` and every
-path returns through `pop {r3,r4,r5,r6,r7,pc}` at `0x182c2`, so the trampoline may
-clobber `r0`-`r3` and `lr` freely and must simply leave the stack balanced.
+**ABI, *verified*:** the dispatcher's prologue at `abs 0x18264` is
+`push {r3,r4,r5,r6,r7,lr}` and every path returns through `pop {r3,r4,r5,r6,r7,pc}` at
+`abs 0x182c2`. `r4` is the frame struct pointer and is what the trampoline is handed in
+`r0`. So the trampoline may clobber `r0`-`r3` and `lr` freely, must leave the stack
+balanced, and returns by branching to `0x182c2` rather than through `lr`.
 
 The earlier plan of repointing the dead `cmp r2,#'S'` at `abs 0x182a2` still works but is
 strictly worse: its `beq` targets a **2-byte branch island** at `abs 0x1837a` that cannot
@@ -156,12 +197,22 @@ disagreement between `firmware-internals.md` (`[frame+2]`) and `vendor-app-proto
 A small self-describing block at `abs 0x26a24`, so the HELLO handler can report exactly
 what is compiled in rather than a hardcoded constant that can drift:
 
-    +0x00  magic "JGX1"            marks a valid extension, guards against a half-flash
-    +0x04  ext_version u16         our firmware version, returned by HELLO
-    +0x06  cap_bitmap u16          which sub-command families are present
-    +0x08  subcmd_table            offset per implemented sub-command, 0 = absent
+    +0x00  magic "JGX1"      marks a valid extension to our own tooling
+    +0x04  ext_version u16   our firmware version, returned by HELLO
+    +0x06  cap_bitmap u16    which sub-command families are present
+    +0x08  entry u32         trampoline entry, Thumb, so the low bit is set
+    +0x0c  size u32          extension length, so a read-back knows what to check
+    +0x10  table_count u16   how many sub-command slots follow
+    +0x12  reserved u16
+    +0x14  subcmd_table      u16 offset per sub-command, 0 = absent
     ...    handler code
     ...    read-only data (capability text, defaults)
+
+*Corrected 2026-08-11: this diagram put `subcmd_table` at `+0x08` and listed no entry,
+size or table count at all, so anyone laying out a v2 header from it would have collided
+with three fields. `HDR` in `research/tools/ext.ts` is the authority and the built header
+matches it. The magic was also called a half-flash guard, which "Failure modes" explains
+it is not. v1's values are in the "Reviewed 2026-08-09" table.*
 
 The group key and the advert name are patched **in place** at their stock addresses (see
 "Identity"), not stored in this region. v1's code footprint here is small: trampoline
@@ -273,6 +324,16 @@ it. **Write exactly 16 bytes.** This belongs in the safety invariants below.
 
 ## The dual-key consequence of wanting both
 
+**Read the key swap the right way round: it is first a defence, and the crew credential
+falls out of the same change.** Its primary job is that nobody holding the stock vendor app
+can drive a unit someone is wearing in a field full of `GLASSES-` pairs; that the group key
+then also gates crew control is the same 16 bytes doing a second job. The extension adds no
+way to write another person's flash or to leave content they cannot clear: reaching a
+non-crew pair is the temporary, no-flash live route in `notes/what-to-build.md`, "At a
+festival: spraying a temporary image at nearby pairs", governed by the consent rule there.
+"Stranger control" below names a capability the stock protocol already hands every
+vendor-app user, not a covert feature this extension introduces.
+
 Opportunistic stranger control and a hardened crew force the **app** to speak two keys:
 the vendor key to drive strangers on stock, the group key to drive crew.
 `packages/core/aes.ts` already isolates the cipher, so the key becomes a per-connection
@@ -287,8 +348,8 @@ people's glasses", and is not repeated here.
 | --- | --- | --- | --- |
 | v0 | none | Multi-connection app client. Drive your own pairs and opportunistic stranger stock pairs. Proves the whole interaction model at zero flash risk | nothing |
 | v1 | **built, unflashed** | Extension framework + HELLO/capabilities + group key & rename. 88 B of extension, 48 B of the vendor's code changed. `bun run build-firmware` | done: all three gates discharged |
-| v2 | yes | Button back-channel: button events over notify. Unlocks tap tempo, message handoff down a row, stranger opt-in | re-derive the *derived* button addresses on hardware |
-| v3+ | yes | Sync primitives, seeded-rand decision, on-device content, staging-bank capacity, animation bytecode | crystal-vs-RC test, SRAM budget confirmation |
+| v2 | yes | Button back-channel: button events over notify. Unlocks tap tempo, message handoff down a row, stranger opt-in, and the playlist advance ("Reserved seams: playlist") | re-derive the *derived* button addresses on hardware |
+| v3+ | yes | Sync primitives, seeded-rand decision, on-device content, staging-bank capacity, animation bytecode | crystal-vs-RC, which needs a second working pair and so sits behind the SWD repair, unless the clock init is read offline first. SRAM budget: **now confirmed**, no longer a dependency |
 
 Nothing after v1 re-patches the dispatcher or the notify sender; it is all new
 sub-commands and new message types. That is the payoff of the one-opcode decision.
@@ -313,24 +374,50 @@ Design the seams now, build later. Two regimes, both expressible as sub-commands
   columns per write, no sweep). Drift cannot exist by construction; skew is just
   connection-interval jitter, 15 to 50 ms, well inside a beat. Costs constant radio.
 - **Autonomous + resync.** Each pair animates locally; the host sends `set-phase` /
-  `set-tempo` every few seconds. Battery-friendly. Needs a **fractional tempo accumulator**
-  (interval in 8.8 fixed point, add per tick, advance on crossover) so quantisation to the
-  20 ms tick does not drift a full beat within 30 s.
+  `set-tempo` every few seconds. Battery-friendly. Needs a **fractional tempo
+  accumulator**: the fixed-point arithmetic and why whole ticks drift a full beat within
+  30 s are in `notes/what-to-build.md`, "Syncing several pairs", not repeated here.
 
-The extension owns the accumulator rather than editing the stock animation engine, which
-keeps the risky region untouched. Whether two pairs stay locked all night or separate in
-seconds depends on crystal-versus-RC tick, an open hardware gate below.
+The design commitment is that **the accumulator lives in our region**: the extension owns
+it rather than editing the stock animation engine, which keeps the risky region untouched.
+Whether two pairs stay locked all night or separate in seconds depends on the
+crystal-versus-RC tick, which is still open and is **not** the quick measurement it was
+long described as: it wants two working pairs and only one exists. See "Open gates".
 
 ## Reserved seams: on-device content (v3+)
 
-The `0x20` family. The research's conclusion is **generate the fast content, store the
-slow content**: a frame compressor is a weak lever (1.3x to 2.4x measured), whereas
-repointing storage at the 76.8 KB staging bank is 50x and parametric generation is 72x on
-the one example measured. The endgame is a tiny animation **bytecode** (fill-rect, shift,
-fade, mirror, invert, wait-N, loop, plasma-with-params), interpreter in 500 to 1,500 free
-bytes, a whole animation in tens of bytes. It composes with everything else: a sub-command
-selects a program, the staging bank holds hundreds, a seeded `rand()` varies them per
-boot. All *derived* from `research/firmware-internals.md`; nothing here is built.
+The `0x20` family. The research's conclusion is **generate the fast content, store the slow
+content**, and it rules a frame compressor out. The measured ratios, the staging-bank
+capacity table and the parametric multiple are in `research/firmware-internals.md`,
+"Compression is a weak lever, measured", and are not restated here.
+
+What belongs here is the design consequence: **bytecode is the seam in the `0x20`
+family.** A tiny animation bytecode (fill-rect, shift, fade, mirror, invert, wait-N, loop,
+plasma-with-params) with an interpreter in 500 to 1,500 free bytes puts a whole animation
+in tens of bytes, and it composes with everything else: a sub-command selects a program,
+the staging bank holds hundreds, a seeded `rand()` varies them per boot. *derived*;
+nothing here is built.
+
+## Reserved seams: playlist (v2 button + v3 slots)
+
+The phone-side playlist exists and is cycled by the host: 2 to 10 items, statics live and
+every scroller packed into one type 1 reel, so a press writes no flash. It is
+`core/src/playlist.ts` and the judgement is `notes/playlist.md`.
+
+What belongs here is which two seams it lands on, because it is the first feature that
+needs both. **Select is a sub-command in the `0x20` family and the advance is the v2 button
+hook**: entries become page-aligned slots in the staging bank, the reel concept disappears
+once the device can hold all ten scrollers, and the hook at the press latch advances an
+index in RAM and repoints the display's content pointers, so a press still writes no flash.
+The index resetting to item 1 at power-on is deliberate, slot upload rewrites only that
+slot's pages, and any OTA wipes the bank so playlists re-upload after a flash. The 2 s
+long-press power-off is never touched.
+
+`playlist.Cycler`'s `Driver` is the seam on our side: four methods, and the firmware version
+replaces what they send without moving `Entry`, `check` or `compile`. Detail and the button
+addresses this waits on are `notes/playlist.md`, "The firmware version this is shaped for",
+and `research/firmware-internals.md`, "Content in the staging bank". *derived*, and it
+inherits v2's dependency: the button addresses are hand-decoded and unwitnessed.
 
 ## Safety invariants the design never breaks
 
@@ -359,6 +446,7 @@ boot. All *derived* from `research/firmware-internals.md`; nothing here is built
 
 | Failure | Cost | Recovery |
 | --- | --- | --- |
+| **Commit (OTA ctrl `03`) hands control to an unverified bootloader. This is the one that happened, 2026-08-08** | the unit. `GLASSES-12C3EF` staged cleanly, its own CRC matched, it reset itself and never came back, so the fault is the handoff into LDROM rather than the image | **none over the air.** The whole persistent change is `CONFIG0 = 0xFFFFFF3F`, and the repair is one erase of the config page at `0x00300000` over SWD: `research/brick-2026-08-08.md`. Until LDROM has been dumped, do not send ctrl `03` to anything; `bun run flash stage` is safe and was run on that same unit with no harm |
 | Aborted or corrupt transfer | none, nothing committed | staging bank is scratch; reconnect, retry |
 | Valid image that boots but breaks BLE | high, no OTA service to re-flash through | prevented by patching in place, never relinking; caught by `ota.check` boot-vector checks |
 | Image erases bootloader (>83,968 B) | unrecoverable without SWD | prevented by the 76,800 B ceiling in `patch.ts`, which refuses to emit past it |
@@ -404,29 +492,42 @@ vendor's own code**: `thumb.test.ts` rebuilds the stock `LOOP` arm and the entir
 sender from mnemonics and asserts the bytes match the image. An encoder that reproduces
 code already running on the device is worth more than one that merely compiles.
 
-Only flash after step 3 of the safe procedure in `research/firmware-flashing.md` has
-proven staging on hardware.
+**Steps 1 to 3 of the safe procedure in `research/firmware-flashing.md` are all anyone
+should run today**, and nothing goes near a device until step 3 has proven staging on
+hardware. **Step 4 is struck**: it was `bun run flash commit` on the stock container,
+verbatim the command that bricked `GLASSES-12C3EF`. `packages/cli/src/flash.ts` now refuses
+`commit` without `--ldrom-verified`, printing the brick and exiting 2 before it opens the
+Bluetooth adapter, and `--yes` alone no longer gets past it. Only an LDROM dump over SWD
+showing a bootloader that restores `CBS` honestly supports that flag, and nobody has dumped
+it, so the bar is in code rather than in a reader's discipline. Do not pass it to silence
+the tool.
 
 ## Open gates before any bytes
 
+**Two are still open.** They are stated in full below. The other nine are discharged, and
+what each turned out to be is recorded in the section that owns it rather than duplicated
+here, because this table used to restate half the document two hundred lines further down
+and the two live gates were lost in it.
+
 | Gate | Blocks | What settles it | Confidence today |
 | --- | --- | --- | --- |
-| ~~Opcode frame offset~~ | - | **settled, and it was never a disagreement.** `r4` is a struct pointer whose frame data starts one byte in, so wire index `n` is `[r4+n+1]`: the opcode is wire index 1 *and* `[r4+2]`. Both documents were right. Confirmed twice over: `ANIM` reads its argument at `[r4+6]` for wire index 5, and our own `frame()` is verified on hardware by the `DATS` upload. The length gate is a separate field at `[r4+0xfb]`, not `[frame+0]` | *verified* |
-| ~~Notify sender safe outside DATS~~ | - | **discharged.** `0x2145c` reads no DATS global; inputs are ptr+len plus two fixed scratch buffers. **But it constrains the frame:** hardcoded characteristic index `0x0b`, always sends exactly 16 bytes, payload ceiling **15 bytes**, output AES-encrypted | *verified* |
-| ~~Key buffer covers both RX and TX~~ | - | **discharged by uniqueness.** One key constant, one setup call (`0x1f5fc`, single caller), one RAM schedule at `0x20002f90` read by both cipher families. **Hazard: the AES S-box starts at `0x22ba4`, immediately after the key.** Write exactly 16 bytes; a 17th corrupts the cipher and `ota.check` will not catch it | *verified* |
-| ~~BLE MAC readable address~~ | - | **dissolved, not solved.** The MAC comes from the BLE stack below `abs 0x16800` and cannot be located offline. But a central already learns the peripheral address from the scan and connection, so `unit_id` in the HELLO reply is redundant. Drop it and reclaim 6 of the 15 payload bytes | *verified* reasoning |
-| ~~Dispatcher hook distance~~ | - | **settled.** Overwrite the 28-byte `LOOP` block at `abs 0x182a6`-`0x182c1`, the fall-through target for unmatched opcodes. One contiguous length-preserving edit, 18 bytes used of 28, no branch island. Costs `LOOP`, still reachable as `ANIM 19` | *verified* |
-| ~~Second entry into the hooked block~~ | - | **found while building, now closed.** `abs 0x184a6` in the `LIGHT` arm branches to `abs 0x182aa`, four bytes into the block, for any `L` opcode that is not `LIGHT`. The layout puts the epilogue branch exactly there. Asserted at build time. See the hook section | *verified* |
-| ~~Dispatcher hook ABI~~ | - | **discharged.** Prologue `push {r3,r4,r5,r6,r7,lr}` at `abs 0x18264`, shared epilogue `pop {r3,r4,r5,r6,r7,pc}` at `abs 0x182c2`. The trampoline may clobber `r0`-`r3` and `lr` freely and must return by branching to `0x182c2`. `r4` is the frame pointer | *verified* |
-| ~~Button pin and addresses~~ | - | **discharged.** Whole button section hand-checked against bytes, P5.2 confirmed as `0x50004280 + 0x28`. v2 needs no hardware re-derivation first | *verified* |
-| Mode table reach | anything adding a display mode | **new.** Both `MODE` dispatch tables are byte offsets with a 510-byte reach, so a mode entry cannot address free flash either. Same trampoline problem, different table | *verified* |
-| Crystal vs RC tick | v3 sync cadence | start two pairs together, time divergence | *unverified* |
-| ~~SRAM genuinely free~~ | - | **confirmed.** SP `0x20003910`, app RAM ends ~`0x20003804`, so ~268 B stack headroom. The 1,536 B `DATS` buffer is confirmed by adjacency: `0x200030ac + 1536 = 0x200036ac`, exactly the live column buffer. Conclusion unchanged: take working memory from the `DATS` buffer, never the stack | *verified* |
+| **Mode table reach** | anything adding a display mode | **open.** Both `MODE` dispatch tables are byte offsets with a 510-byte reach, so a mode entry cannot address free flash either. Same trampoline problem as the dispatcher, different table, and no `LOOP`-shaped block to spend on it | *verified* |
+| **Crystal vs RC tick** | v3 sync cadence | **open, and the obvious test cannot be run.** Starting two pairs together and timing the divergence needs two working pairs and we have one: unit 1 was bricked on 2026-08-08 and its repair sits behind the SWD probe, so this is not the five-minute test three other documents used to call it. Two discriminators do not need a second unit: **read the clock init** behind the `SystemCoreClock` global at `abs 0x171a4` (`research/firmware-internals.md`, "Unverified"), which settles it offline at *derived* confidence, or **time one pair against a host clock** over ten minutes, where RC error of 1 to 2% shows up as seconds and crystal error as milliseconds. Pair-to-pair skew is at most twice one unit's error, so one unit bounds it | *unverified* |
+| ~~Opcode frame offset~~ | - | discharged, see "The hook itself", the frame-offset caveat | *verified* |
+| ~~Notify sender safe outside DATS~~ | - | discharged, with three constraints on the frame: see "The back-channel: structured notify" | *verified* |
+| ~~Key buffer covers both RX and TX~~ | - | discharged by uniqueness, plus the S-box hazard: see "Identity, the crew key, and the rename" | *verified* |
+| ~~BLE MAC readable address~~ | - | dissolved rather than solved, see "HELLO and capability negotiation" | *verified* reasoning |
+| ~~Dispatcher hook distance~~ | - | discharged, see "The hook itself" | *verified* |
+| ~~Second entry into the hooked block~~ | - | discharged, see "The hook itself", the correction | *verified* |
+| ~~Dispatcher hook ABI~~ | - | discharged, see "The hook itself", the ABI paragraph | *verified* |
+| ~~Button pin and addresses~~ | - | discharged. Whole button section hand-checked against bytes, P5.2 confirmed as `0x50004280 + 0x28`: `research/firmware-internals.md`. v2 needs no hardware re-derivation first | *verified* |
+| ~~SRAM genuinely free~~ | - | discharged, see "Budget: what we have to work with" | *verified* |
 
 ## For the reviewer
 
 Items 2 to 5 of the original list were the v1 blockers, and all four are now discharged
-against the disassembly; the record of what each turned out to be is in "Open gates".
+against the disassembly; the record of what each turned out to be is in the section that
+owns it, indexed from "Open gates".
 What remains are assumptions that **no amount of static analysis can settle**, because
 they are about a device nobody has flashed yet. None of them breaks the recovery
 guarantee, which rests only on "never relink, stay under 76,800 B, do not touch the
@@ -447,11 +548,20 @@ protected regions".
    the advertiser at `abs 0x193c8` with a hardcoded length of 14. So "8 bytes" is a hard
    requirement rather than a ceiling. What is still unproven is that nothing *else* reads
    the buffer; a unit that comes back advertising nothing is the symptom.
-4. **The dispatcher's length gate accepts our frames.** It reads `[r4+0xfb]`, not the wire
-   length byte, and what fills that field was not traced. Every frame from 4 to 20 bytes
-   passes today, ours are 4 to 15, and `SOUT` at length 4 already works, so the risk is
-   low. Recorded because it is the one input to the hook that was reasoned about rather
-   than read.
+4. ~~**The dispatcher's length gate accepts our frames**, the one input to the hook that
+   was reasoned about rather than read.~~ **It was read, on 2026-08-09, and the answer is
+   that we sit on the boundary.** The gate is at `abs 0x18268`, reads `[r4+0xfb]` rather
+   than the wire length byte, and is bounded at **both** ends: **4 to 20 inclusive**. The
+   byte-level decode belongs to `research/firmware-internals.md` and is not restated here.
+   `jgx.hello()` is 4 bytes, **exactly on the lower bound**, which is the part a designer
+   needs: the obvious future change, a sub-command frame shorter than 4 bytes, is dropped
+   by the gate rather than answered, on hardware nobody can currently test. Still
+   *derived* about behaviour, because it is a hand-decode of a static image and nothing
+   has been sent to a device. *Corrected 2026-08-11: this item, and the sentence under the
+   review table below, said the gate was reasoned about rather than read and that no
+   amount of decoding reached it. Decoding reached it. Kept rather than deleted because "a
+   field the dispatcher fills from somewhere we have not traced" is exactly the shape of
+   claim that gets left undecoded for a session too long.*
 5. **The 4-level greyscale, the panel and the button are untouched by all of this.** No
    edit goes near them. Stated so a bad flash is not misdiagnosed as a display problem.
 
@@ -459,10 +569,17 @@ The two things worth doing before any of this is trusted are on hardware, not in
 disassembly: flash `--stock-key --stock-name` first and check the unit still behaves, then
 send one HELLO and see whether a notification comes back.
 
+**Both are barred today, and that is not a matter of caution.** Either needs an OTA
+commit, which is the exact operation that bricked `GLASSES-12C3EF` on 2026-08-08, so `bun
+run flash commit` refuses to run without `--ldrom-verified` (see "Build and inject
+pipeline"). This is the plan for after the SWD work, not for the next session.
+
 ### Reviewed 2026-08-09, and what the review could not reach
 
 A second agent decoded the built image by hand, without using `thumb.ts`, and every byte
-matched this design. *verified*, against `firmware/joggles-v1.bin`:
+matched this design. The last four rows were folded in on 2026-08-11 from
+`.claude/context/firmware-flash-readiness.md`, now retired, and re-read from the binary
+that day. *verified*, against `firmware/joggles-v1.bin`:
 
 | Checked | Result |
 | --- | --- |
@@ -471,15 +588,24 @@ matched this design. *verified*, against `firmware/joggles-v1.bin`:
 | the literal at `abs 0x182b4` | `0x26a3d`, equal to the entry the `JGX1` header declares |
 | the trampoline and HELLO handler | dispatch reads `[r4+3]`; `bl` resolves to the notify sender at `0x2145c` |
 | the diff against stock | 48 bytes in 4 runs, the key patch ending exactly where the S-box starts |
+| the `JGX1` header at `abs 0x26a24` | entry `0x00026a3d` (Thumb, so the odd bit is the mode bit), size `0x58` = 88 bytes |
+| the sub-command table | count 1, and `TABLE[0] = 0x40`, which puts `hello` at `abs 0x26a64` |
+| the HELLO reply constant at `abs 0x26a74` | `f0 00 01 00 01 00`: marker `0xf0`, type `0x00`, ext version 1, capability bitmap 1. 6 bytes, inside the 15-byte notify ceiling |
+| the image length | 66,172 B of body, against stock's 66,084, so 10,628 B of the gap left |
 
 **What that does not establish is anything about a device.** The confidence above is
 "these bytes are the bytes this document describes", not "this firmware runs". Everything
-in the numbered list above stays open, item 4 (the length gate at `[r4+0xfb]`) especially,
-because no amount of decoding reaches it. The first flash is still the first test.
+in the numbered list above stays open, and the first flash is still the first test.
+
+*Corrected 2026-08-11: the paragraph above used to single out item 4, the length gate at
+`[r4+0xfb]`, as the one thing "no amount of decoding reaches". It was decoded on
+2026-08-09: the bound is 4 to 20 and `HELLO` sits on the lower one. What stays open about
+it is only whether the device behaves as the bytes say.*
 
 The review also found the wire-frame diagram wrong, corrected in "The load-bearing
-decision" above, and left one thing unfixed: **`research/README.md` indexes six of the
-eight files in `research/tools/` and omits `dumpcheck.ts` and `swd-recon.sh`**, so the two
-SWD tools are invisible to anyone arriving through the index. `research/*.md` belongs to
-track 5 (`notes/parallel-tracks.md`), which was mid-flight, so it was recorded rather than
-edited.
+decision" above, and left one thing unfixed: ~~`research/README.md` indexes six of the
+eight files in `research/tools/` and omits `dumpcheck.ts` and `swd-recon.sh`~~, which made
+the two SWD tools invisible to anyone arriving through the index. **Closed 2026-08-11: both
+are indexed now.** Kept as the record of why the reviewer wrote it down rather than fixing
+it: `research/*.md` belongs to track 5 (`notes/parallel-tracks.md`), which was mid-flight,
+and one file edited from two tracks at once is how a document ends up wrong.

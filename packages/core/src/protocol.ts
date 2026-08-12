@@ -103,9 +103,75 @@ export const enterDIYAlt = () => frame('SMVEW', 3)
 export const exitDIY = () => frame('SMVEW', 0)
 export const exitDIYSave = () => frame('SMVEW', 2)
 export const brightness = (level: number) => frame('LIGHT', level)
-/** 0-100, bucketed to 3.8-12.5 columns/second by the ladder at `abs 0x183da`. */
+/** 0-100, bucketed to 3.8-12.5 columns/second by the ladder below. */
 export const speed = (v: number) => frame('SPEED', v)
-/** Bank index, and the bank starts at 20: the fourth animation is 23, not 3. */
+
+// --- What `SPEED n` actually does, so a preview can be a simulation ---
+//
+// *verified*, disassembled by hand from the bucketing ladder at `abs 0x183da`. The
+// argument is compared against 10, 20, 30, ... 90 and a frame divisor is written to
+// RAM `0x2000266e`; the scroll advances one column every `divisor` ticks of the 50 Hz
+// animation clock (`abs 0x18052` holds `0x32`). So a column lasts `divisor * 20ms`,
+// from 260ms at the bottom to 80ms at the top.
+//
+// **This corrects `research/firmware-internals.md`**, which records the ladder as
+// comparing against "50, 60, 70, 80, 90". Those are the five comparisons inside the
+// address range it quotes (`abs 0x18400`-`0x18428`); four more sit just before it at
+// `0x183de`-`0x183fe`, so there are ten buckets rather than six. The 3.8 to 12.5
+// columns per second the same paragraph gives is right, and is these two endpoints.
+//
+// It lives here rather than in the app, next to the opcode it describes, so the CLI
+// and the phone cannot disagree about how fast the panel is about to move.
+
+/** One tick of the firmware's animation clock, which runs at 50 Hz. */
+export const SPEED_TICK_MS = 20
+
+/**
+ * `[argument at most, frame divisor]`, in the order the firmware tests them.
+ * Anything above the last threshold gets `SPEED_FASTEST`.
+ */
+const SPEED_LADDER: Array<[number, number]> = [
+  [10, 13],
+  [20, 12],
+  [30, 11],
+  [40, 10],
+  [50, 9],
+  [60, 8],
+  [70, 7],
+  [80, 6],
+  [90, 5],
+]
+
+/** The divisor above the last threshold. */
+export const SPEED_FASTEST = 4
+
+/** Ticks the device holds each column for. 13 at the slowest, 4 at the fastest. */
+export const speedDivisor = (v: number): number =>
+  SPEED_LADDER.find(([atMost]) => v <= atMost)?.[1] ?? SPEED_FASTEST
+
+/** Milliseconds the device holds each column: 260 at the slow end, 80 at the fast. */
+export const msPerColumn = (v: number): number => speedDivisor(v) * SPEED_TICK_MS
+
+/** The same as a rate, which is the number worth showing a person. */
+export const columnsPerSecond = (v: number): number => 1000 / msPerColumn(v)
+
+/**
+ * Bank index.
+ *
+ * **The base is disputed and nothing should be built on either reading yet.** This
+ * line used to say flatly that the bank starts at 20, so the fourth animation is 23:
+ * that is the *vendor app's* convention, taken from `Agreement.getAnimCommand`, which
+ * sends `ANIM 20` to `ANIM 29` for ten animations. Track 20's independent decode of
+ * the firmware reads the handler as **mode `i + 5`**, which puts the vendor's 20-29 at
+ * modes 25-34: the image mode, the type 2 mode, six oddments, and two values
+ * `set_mode` rejects outright. Both cannot be right and no further disassembly can
+ * say which, because each is self-consistent.
+ *
+ * Settling it costs no flash and one look: send `ANIM 0` and compare the panel against
+ * `bun run research/tools/bankdump.ts show anim-0`. Until then treat the argument as
+ * an opaque index, and see `builtins.ts` plus `research/firmware-internals.md`.
+ * *Noted 2026-08-11.*
+ */
 export const animation = (i: number) => frame('ANIM', i)
 /** The firmware matches `LOOP`, not `LOOA`, and our own build removes it entirely:
  *  the dispatcher hook replaces that arm. `animation(19)` reaches the same mode. */
@@ -164,3 +230,26 @@ export function parseType(f: Uint8Array): { rows: number; cols: number } | null 
     ? { rows, cols }
     : null
 }
+
+/**
+ * Milliseconds between live column writes, and between DATS blocks.
+ *
+ * **Measured, at last.** 18 ms was copied out of an early script and never checked; on
+ * 2026-08-12 `verify.ts pacing 6` lit alternate columns 6 ms apart on `GLASSES-125B37`
+ * and all twelve arrived, every gap even (*verified* by eye,
+ * `research/vendor-app-protocol.md`, "The sitting"). The firmware's own floor is ~6.4
+ * ms, one 74-byte frame at 115200 baud on the panel module's UART, so 6 ms is at the
+ * hardware's limit rather than merely faster than before.
+ *
+ * **10, not 6, and the gap is deliberate.** What was proven is that 6 ms works on one
+ * link in one room: BLE negotiates its connection interval per connection, and
+ * write-without-response has no flow control, so a dropped column produces no error
+ * anywhere and looks exactly like dead hardware. 10 ms keeps most of the win with room
+ * for a worse radio: a whole-panel change is 240 ms rather than 430, and a 700-column
+ * upload is ~1.7 s rather than ~5 s, which is the wait behind "it seems to keep having
+ * to send the animation to the device".
+ *
+ * Lower it only with another look at the panel, and never below 6.4 without a reason
+ * to think the module's UART got faster.
+ */
+export const PACING_MS = 10

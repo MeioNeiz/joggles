@@ -2,12 +2,20 @@
  * The pure half of the nickname store, with persistence injected as a `TextFile`.
  * The properties that matter: a broken file degrades to an empty map instead of
  * throwing into a render, and a failed write still renames for the session.
- * The expo-file-system half (`nicknames-store.ts`) does not import under bun,
- * per draw.test.ts; what it must get right - its own file, never the ledger's -
- * is one constant, checked by eye.
+ * The expo-file-system half (`nicknames-store.ts`) does not import under bun, per
+ * draw.test.ts, so what it must get right - its own file, never the ledger's - is
+ * asserted on its source at the bottom of this file rather than by eye.
  */
 import { expect, spyOn, test } from 'bun:test'
-import { MAX_NICKNAME, clean, createStore, type TextFile } from './nicknames.js'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import {
+  MAX_NICKNAME,
+  clean,
+  createStore,
+  nicknameIn,
+  type TextFile,
+} from './nicknames.js'
 
 function memFile(initial: string | null = null) {
   const calls = { reads: 0, writes: 0 }
@@ -69,6 +77,30 @@ test('names are trimmed and capped at MAX_NICKNAME', () => {
   const store = createStore(memFile().file)
   store.set('GLASSES-125B37', '  Larry  ')
   expect(store.get('GLASSES-125B37')).toBe('Larry')
+})
+
+test('the cap leaves no trailing space and no half of an emoji behind', () => {
+  // The cap counts UTF-16 units, so it lands wherever 40 units land: on a space, or
+  // between the two halves of an astral character. A lone surrogate survives the JSON
+  // round trip, so an unchecked cut renders as a tofu box for good.
+  expect(clean(`${'a'.repeat(39)}   tail`)).toBe('a'.repeat(39))
+  expect(clean(`${'x'.repeat(39)}\u{1F600}`)).toBe('x'.repeat(39))
+  expect(clean(`${'x'.repeat(38)}\u{1F600}`)).toBe(`${'x'.repeat(38)}\u{1F600}`)
+  expect(clean('x'.repeat(41))).not.toMatch(/[\uD800-\uDFFF]/)
+})
+
+test('nicknameIn answers null for a key that reads through to Object.prototype', () => {
+  // A map copy answers for every member of Object.prototype: `__proto__` reads back an
+  // object and `toString` a function, and either handed to a React Text child takes the
+  // row down instead of falling back to the advert name. ble.ts filters adverts to
+  // GLASSES-/JOGGLES-, so this is the guard for whatever keys the map next.
+  const names = { 'GLASSES-125B37': 'Larry' }
+  for (const key of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    expect(nicknameIn(names, key)).toBeNull()
+  }
+  expect(nicknameIn(names, 'GLASSES-125B37')).toBe('Larry')
+  expect(nicknameIn({ 'GLASSES-1': '' }, 'GLASSES-1')).toBeNull()
+  expect(createStore(memFile().file).get('__proto__')).toBeNull()
 })
 
 test('setting an empty or all-space name clears the nickname, on disk too', () => {
@@ -154,4 +186,53 @@ test('all() hands out a copy, not the map itself', () => {
   delete copy['GLASSES-125B37']
 
   expect(store.get('GLASSES-125B37')).toBe('Larry')
+})
+
+/**
+ * The one property this feature exists to keep, asserted on source because the
+ * expo-file-system half cannot be imported here.
+ *
+ * Losing a wear count matters and losing a nickname does not, so the two must not share
+ * a write, a parse or a failure - and a nickname is written on a whim where the ledger
+ * is written once per DATCP. Same shape as core's `safe-surface.test.ts`: crawl the
+ * imports rather than trust the file it says it opens.
+ */
+const HERE = dirname(new URL(import.meta.url).pathname)
+
+const nicknamePath = (): string[] => {
+  const seen = new Set<string>()
+  const queue = [resolve(HERE, 'nicknames-store.ts')]
+  while (queue.length) {
+    const file = queue.pop()!
+    if (seen.has(file)) continue
+    seen.add(file)
+    for (const m of readFileSync(file, 'utf8').matchAll(/from\s+'(\.[^']+)'/g)) {
+      queue.push(resolve(dirname(file), m[1].replace(/\.js$/, '.ts')))
+    }
+  }
+  return [...seen]
+}
+
+test('nothing the nickname path reaches can open the ledger', () => {
+  const modules = nicknamePath()
+  // Guards the crawl itself: an assertion over an empty list proves nothing.
+  expect(modules.map((f) => f.split('/').pop()).sort()).toEqual([
+    'nicknames-store.ts',
+    'nicknames.ts',
+  ])
+  for (const file of modules) {
+    const name = file.split('/').pop()
+    const src = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(src, `${name} names the ledger outside a comment`).not.toMatch(/ledger/i)
+  }
+})
+
+test('the nickname file and the ledger file are different files', () => {
+  const named = (f: string) => {
+    const src = readFileSync(resolve(HERE, f), 'utf8')
+    return [...src.matchAll(/'([\w.-]+\.json)'/g)].map((m) => m[1])
+  }
+
+  expect(named('nicknames-store.ts')).toEqual(['nicknames.json'])
+  expect(named('ledger.ts')).toEqual(['ledger.json'])
 })

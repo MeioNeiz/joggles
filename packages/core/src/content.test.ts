@@ -3,7 +3,12 @@ import {
   IMAGE_ACCEPT_CEILING,
   MAX_IMAGE_COLUMNS,
   MAX_SAVED_COLUMNS,
+  SCROLL_GAP,
+  BLANK_SAVE,
+  anyLit,
   assertValid,
+  centre,
+  centreOffset,
   check,
   drawing,
   encodeSaved,
@@ -20,7 +25,12 @@ import {
   width,
 } from './content.js'
 import { TYPE_IMAGE, TYPE_TEXT, decodeImage } from './dats.js'
-import { Grid } from './display.js'
+import { Grid, alive } from './display.js'
+// effects imports content, not the other way round, so there is no cycle here.
+import * as fx from './effects.js'
+import * as font from './font.js'
+
+const blankBitmap = (cols: number) => grid(9, cols, 0)
 
 const grid = (rows: number, cols: number, v = 0) =>
   Array.from({ length: rows }, () => new Array(cols).fill(v))
@@ -72,10 +82,23 @@ test('short text is padded to a full screen', () => {
   expect(width(text('HI').bitmap)).toBeGreaterThanOrEqual(24)
 })
 
-test('scrolling text gets a trailing gap so the wrap is readable', () => {
+/**
+ * The gap between repeats is the device's, and a client gap adds to it.
+ *
+ * A 27-column save carrying no client gap showed a full screen width of dark on the
+ * panel (2026-08-11, against a payload verified off the wire log), so 0 here is what
+ * produces one screen width and 24 would produce two - which is what the original
+ * complaint was. Asserted as an equality with the static width rather than against 0,
+ * so the day someone reintroduces a scroll-only default it fails here.
+ */
+test('scrolling text adds no client gap: the gap between repeats is the device\'s', () => {
   const still = width(text('HELLO THERE').bitmap)
   const moving = width(text('HELLO THERE', { kind: 'scroll', dir: 0, speed: 50 }).bitmap)
-  expect(moving).toBe(still + 24)
+  expect(SCROLL_GAP).toBe(0)
+  expect(moving).toBe(still)
+  // Available per call, for a caller that wants two screen widths rather than one.
+  const spaced = text('HELLO THERE', { kind: 'scroll', dir: 0, speed: 50 }, { gap: 24 })
+  expect(width(spaced.bitmap)).toBe(still + 24)
 })
 
 test('a drawing is 24 columns on the live route', () => {
@@ -215,4 +238,120 @@ test('encodeSaved refuses content check would reject', () => {
 test('scrolling is MODE 02 and static is MODE 01', () => {
   expect(modeArgs({ kind: 'scroll', dir: 1, speed: 50 })).toEqual({ kind: 2, dir: 1 })
   expect(modeArgs({ kind: 'static' })).toEqual({ kind: 1, dir: 0 })
+})
+
+// Track 27. The combination review-13 found on the Pixel, built by name rather than as
+// a hand-made dark bitmap: a guard that only catches bitmaps a test invented would not
+// have caught this one, which came out of a generator under an enabled Upload button.
+const darkLoop = () =>
+  fx.EFFECTS.mirror({ inner: 'ripple', folds: 10, dither: 'none', levels: 2, columns: fx.MAX_COLUMNS })
+
+test('the found dark loop really is dark, at the width the screen offered', () => {
+  const bitmap = darkLoop()
+  expect(width(bitmap)).toBe(fx.MAX_COLUMNS)
+  expect(anyLit(bitmap)).toBe(false)
+})
+
+test('a type 1 save of nothing is refused, and asking to clear is how you mean it', () => {
+  const piece = { bitmap: darkLoop(), route: 'saved' as const, motion: { kind: 'static' as const } }
+  expect(check(piece)).toContain(BLANK_SAVE)
+  expect(check(piece, { blank: 'clear' })).not.toContain(BLANK_SAVE)
+  expect(() => encodeSaved(piece)).toThrow(/nothing here is lit/)
+  expect(encodeSaved(piece, { blank: 'clear' }).columns).toBe(fx.MAX_COLUMNS)
+})
+
+test('the blank rule is scoped to the one path that spends flash', () => {
+  const bitmap = blankBitmap(24)
+  // Live writes no flash at all, so a dark panel there costs nothing and is not ours
+  // to refuse. Type 2 lands in RAM and dies at power off, same argument.
+  expect(check({ bitmap, route: 'live', motion: { kind: 'static' } })).not.toContain(BLANK_SAVE)
+  const saved = { bitmap, route: 'saved' as const, motion: { kind: 'static' as const } }
+  expect(check(saved, { type: TYPE_IMAGE })).not.toContain(BLANK_SAVE)
+  expect(check(saved, { type: TYPE_TEXT })).toContain(BLANK_SAVE)
+})
+
+// review-27. The rule read `content.bitmap` while `encodeSaved` wrote
+// `flatten(bitmap, threshold)`, so a threshold above every level in the content walked
+// straight through it: check() said nothing and the encode produced an all-zero type 1
+// payload, which is five page erases for a dark panel. The `threshold` docblock sends
+// callers at exactly this pair of options, so it was reachable by following the file.
+test('the blank rule reads what reaches the panel, not the bitmap it started from', () => {
+  const bitmap = blankBitmap(24)
+  bitmap[3][5] = 1
+  bitmap[4][6] = 2
+  const piece = { bitmap, route: 'saved' as const, motion: { kind: 'static' as const } }
+  expect(anyLit(bitmap)).toBe(true)
+  expect(anyLit(flatten(bitmap, 3))).toBe(false)
+
+  expect(check(piece, { type: TYPE_TEXT, threshold: 3 })).toContain(BLANK_SAVE)
+  expect(() => encodeSaved(piece, { type: TYPE_TEXT, threshold: 3 })).toThrow(/nothing here is lit/)
+  // The escape still works on this path, and a threshold everything survives is silent.
+  expect(check(piece, { type: TYPE_TEXT, threshold: 3, blank: 'clear' })).not.toContain(BLANK_SAVE)
+  expect(check(piece, { type: TYPE_TEXT })).not.toContain(BLANK_SAVE)
+})
+
+test('a zero-column bitmap says one thing, not two', () => {
+  const empty = { bitmap: blankBitmap(0), route: 'saved' as const, motion: { kind: 'static' as const } }
+  expect(check(empty)).toContain('bitmap has no columns')
+  expect(check(empty)).not.toContain(BLANK_SAVE)
+})
+
+// Track 35. Measured off the bitmap rather than against a fixed column, so track 29's
+// new fonts (band6, slim5) cannot break these by being a different width.
+const firstLitColumn = (bitmap: number[][]) => {
+  const cols = width(bitmap)
+  for (let c = 0; c < cols; c++) if (bitmap.some((row) => row[c] > 0)) return c
+  return -1
+}
+const lastLitColumn = (bitmap: number[][]) => {
+  for (let c = width(bitmap) - 1; c >= 0; c--) if (bitmap.some((row) => row[c] > 0)) return c
+  return -1
+}
+
+test('a static word is centred, and the slack is split the way centreOffset says', () => {
+  const bitmap = text('HI', { kind: 'static' }).bitmap
+  expect(width(bitmap)).toBe(24)
+  const left = firstLitColumn(bitmap)
+  const drawn = lastLitColumn(bitmap) - left + 1
+  expect(left).toBe(centreOffset(drawn, 24))
+  // The spare column of an odd remainder sits on the RIGHT: ties left, decided rather
+  // than inherited from Math.floor, because the panel's axis is 11.5 and no column is
+  // on it.
+  const right = 24 - drawn - left
+  expect(right - left).toBe((24 - drawn) % 2)
+})
+
+test('a scroller is not centred, because its left edge is where the pass begins', () => {
+  const bitmap = text('HI', { kind: 'scroll', dir: 0, speed: 50 }).bitmap
+  expect(firstLitColumn(bitmap)).toBe(0)
+})
+
+test('gap widens a scroller and is ignored for a static', () => {
+  const scrolled = text('HI', { kind: 'scroll', dir: 0, speed: 50 }, { gap: 24 }).bitmap
+  expect(width(scrolled)).toBeGreaterThan(24)
+  expect(width(text('HI', { kind: 'static' }, { gap: 24 }).bitmap)).toBe(24)
+})
+
+test('centre never truncates, and centring puts no pixel in a dead hole', () => {
+  const wide = grid(9, 40, 1)
+  expect(width(centre(wide, 24))).toBe(40)
+  const bitmap = text('HI', { kind: 'static' }).bitmap
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 24; c++) {
+      if (bitmap[r][c] > 0) expect(alive(r, c)).toBe(true)
+    }
+  }
+})
+
+test('text renders in the font it is given, and the default is unchanged', () => {
+  const dflt = text('JOGGLES', { kind: 'scroll', dir: 0, speed: 50 })
+  const slim = text('JOGGLES', { kind: 'scroll', dir: 0, speed: 50 }, { font: font.SLIM5 })
+  // slim5 exists so this word crosses the price line: 27 columns in band5, 24 here, so
+  // the same message is five page erases in one face and free in the other.
+  expect(width(dflt.bitmap)).toBeGreaterThan(width(slim.bitmap))
+  expect(width(slim.bitmap)).toBe(24)
+  // A face that cannot scroll is placed rather than baselined, and still fits the panel.
+  const tall = text('HI', { kind: 'static' }, { font: font.TALL7 })
+  expect(tall.bitmap.length).toBe(9)
+  expect(width(tall.bitmap)).toBe(24)
 })

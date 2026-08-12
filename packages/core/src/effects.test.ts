@@ -16,7 +16,7 @@
 import { expect, test } from 'bun:test'
 import * as content from './content.js'
 import * as dats from './dats.js'
-import { MAX_LEVEL, ROWS, alive } from './display.js'
+import { COLS, MAX_LEVEL, ROWS, alive } from './display.js'
 import * as fx from './effects.js'
 import * as viewport from './viewport.js'
 
@@ -328,17 +328,144 @@ test('mirror output is pixel-symmetric about every axis, which is the kaleidosco
   // exact binary fraction and symmetry can be equality rather than tolerance.
   // dither: none, because the Bayer thresholds are position-tied and shade the
   // two sides of an axis differently on purpose.
+  //
+  // The axes sit half a column off the segment boundaries, in the gaps between
+  // columns: that is what lets one land on the nose bridge, which is a gap and
+  // not a column. So the pairs either side of an axis are whole columns.
+  const wrap = (col: number) => ((col % 64) + 64) % 64
   for (const folds of [1, 2]) {
     const bmp = fx.mirror({ columns: 64, folds, dither: 'none' })
     for (let k = 0; k <= 2 * folds; k++) {
-      const axis = (k * 64) / (2 * folds)
-      for (let d = 1; d < 8; d++) {
-        const a = (((axis + d) % 64) + 64) % 64
-        const b = (((axis - d) % 64) + 64) % 64
+      const axis = (k * 64) / (2 * folds) - 0.5
+      for (let d = 0; d < 8; d++) {
+        const a = wrap(axis - d - 0.5)
+        const b = wrap(axis + d + 0.5)
         for (let r = 0; r < ROWS; r++) expect(bmp[r][a]).toBe(bmp[r][b])
       }
     }
   }
+})
+
+/**
+ * Live mirror-pair mismatches in the 24-column window at one scroll offset.
+ *
+ * The panel is the arbiter here, not the loop: `windowAt` has already blanked
+ * the dead LEDs, and the dead map is itself symmetric about the bridge (rows 0
+ * and 8 dead 9 to 14, row 1 dead 10 to 13), so column c against column 23 - c
+ * over the whole window is exactly "do the two lenses show mirror images".
+ */
+const bridgeMismatch = (bitmap: content.Bitmap, off: number): number => {
+  const win = viewport.windowAt(bitmap, off, { wrap: true })
+  let bad = 0
+  for (let c = 0; c < COLS / 2; c++) {
+    for (let r = 0; r < ROWS; r++) if (win[r][c] !== win[r][COLS - 1 - c]) bad++
+  }
+  return bad
+}
+
+/** Every scroll offset at which the two lenses are exact mirrors. */
+const mirrorOffsets = (bitmap: content.Bitmap): number[] => {
+  const out: number[] = []
+  for (let off = 0; off < content.width(bitmap); off++) {
+    if (bridgeMismatch(bitmap, off) === 0) out.push(off)
+  }
+  return out
+}
+
+test('mirror lands an exact reflection on the nose bridge, at every width', () => {
+  // The property the effect exists for, and the one the axis test above cannot
+  // see: symmetry about the *loop's* axes says nothing about whether any of them
+  // ever coincides with the *panel's* own axis, which is the half-column gap
+  // between columns 11 and 12. Folding on whole columns passes the test above
+  // and never mirrors the lenses: 22 of 100 live pairs differ at the kindest
+  // offset, 71 at the worst width.
+  for (const columns of [8, 64, 240, 736]) {
+    const bmp = fx.mirror({ columns })
+    const offs = mirrorOffsets(bmp)
+    expect(`${columns}: ${offs.length > 0}`).toBe(`${columns}: true`)
+    // And not because the window is blank or flat, which would make equality
+    // free. Three levels of a plasma, reflected.
+    const win = viewport.windowAt(bmp, offs[0], { wrap: true })
+    expect(new Set(win.flat()).size).toBeGreaterThan(2)
+  }
+
+  // Teeth. Nothing unfolded should ever have such an offset, or the measurement
+  // above proves nothing. ripple is left out on purpose: its rings are radially
+  // symmetric about each source column, so it genuinely does mirror at 90 of the
+  // 240 offsets without any help from this wrapper.
+  for (const name of ['plasma', 'stripes', 'wave', 'starfield', 'fire']) {
+    const bmp = fx.EFFECTS[name]({ columns: 240, dither: 'none' })
+    expect(`${name}: ${mirrorOffsets(bmp).length}`).toBe(`${name}: 0`)
+  }
+})
+
+test('the reflection comes back round, rather than happening twice a pass', () => {
+  // The half-column shift alone lands one exact reflection at any width; it is
+  // the fold snap that makes it recur. Unsnapped, 736 columns over 15 folds puts
+  // the axes 24.53 columns apart and only 2 of the 736 offsets reflect, which at
+  // the device's scroll rate is once every 30 to 97 seconds: not a kaleidoscope.
+  expect(fx.mirrorFolds(736)).toBe(16)
+  expect(fx.mirrorFolds(240)).toBe(5)
+  expect(736 % fx.mirrorFolds(736)).toBe(0)
+  for (const columns of [64, 240, 736]) {
+    const offs = mirrorOffsets(fx.mirror({ columns }))
+    let worst = columns - offs[offs.length - 1] + offs[0]
+    for (let i = 1; i < offs.length; i++) worst = Math.max(worst, offs[i] - offs[i - 1])
+    // 89 columns is the worst any reachable width does (712, whose divisors all
+    // sit far from the folds it asks for). 24 seconds at the slowest SPEED.
+    expect(`${columns}: ${worst <= 89}`).toBe(`${columns}: true`)
+    expect(worst / fx.SLOWEST_SCROLL).toBeLessThan(24)
+  }
+  // An asked-for count is snapped to a divisor, the way cycles are rounded and
+  // widths snapped to a tile: near what you asked for, and it closes.
+  expect(fx.mirrorFolds(240, 7)).toBe(6)
+  expect(fx.mirrorFolds(240, 1)).toBe(1)
+  const asked = { columns: 240, folds: 7 }
+  expect(fx.mirror(asked)).toEqual(fx.mirror({ columns: 240, folds: 6 }))
+})
+
+test('mirror does not dither by default, because ordered dither cannot mirror', () => {
+  // The Bayer threshold is a function of the panel column and is not symmetric
+  // about the bridge, so it shades the two sides of an axis differently: 47 of
+  // the 100 live pairs differ under it however well the axis is placed. Every
+  // other effect wants the texture; this one wants the symmetry.
+  expect(fx.threshold(0, 3)).not.toBe(fx.threshold(0, COLS - 1 - 3))
+  expect(mirrorOffsets(fx.mirror({ columns: 240, dither: 'ordered' })).length).toBe(0)
+  expect(fx.mirror({ columns: 240 })).toEqual(fx.mirror({ columns: 240, dither: 'none' }))
+  // And an explicit undefined means this effect's default, not render's: the
+  // same trap starfield fell into.
+  const undef = { columns: 240, dither: undefined }
+  expect(fx.mirror(undef)).toEqual(fx.mirror({ columns: 240 }))
+})
+
+test('a name off Object.prototype is a miss, not a call into Object', () => {
+  // Every name reaching these registries comes from outside: an argv word, a
+  // stored preset, a tap on a list. On a plain object EFFECTS.constructor is
+  // Object, which passes an `if (!make)` guard and then fails far away - the
+  // preview died inside its ASCII printer with "bitmap[r].slice(...).map is not
+  // a function", naming neither the registry nor the name.
+  expect(Object.getPrototypeOf(fx.EFFECTS)).toBe(null)
+  expect(Object.getPrototypeOf(fx.FIELDS)).toBe(null)
+  const inherited = ['constructor', 'toString', '__proto__', 'valueOf', 'hasOwnProperty']
+  for (const name of inherited) {
+    expect(fx.EFFECTS[name]).toBeUndefined()
+    expect(fx.FIELDS[name]).toBeUndefined()
+    expect(() => fx.mirrorField({ inner: name })).toThrow(/no field called/)
+  }
+})
+
+test('an inner that is not a field at all is refused where it is readable', () => {
+  // Otherwise it surfaces as "field is not a function" from inside the sample
+  // loop, which names neither the option nor the effect that carried it. Same
+  // reason render checks levels: the untyped caller is the CLI, and anything
+  // rebuilding an effect from stored options.
+  for (const bad of [0, 1, true, {}, []]) {
+    expect(() => fx.mirrorField({ inner: bad as never })).toThrow(/inner must be a field/)
+  }
+  // null and undefined both mean "this effect's default inner".
+  expect(fx.mirror({ columns: 64, inner: undefined })).toEqual(fx.mirror({ columns: 64 }))
+  const nulled = { columns: 64, inner: null as never }
+  expect(fx.mirror(nulled)).toEqual(fx.mirror({ columns: 64 }))
 })
 
 test('the default mirror keeps an axis on screen, and folds is the variety trade', () => {
@@ -394,6 +521,59 @@ test('fire rises from the bottom: full base, dark top, thinning in between', () 
   expect(mean(4)).toBeLessThan(mean(0))
 })
 
+test('fire draws a silhouette only without the dither, worst at levels 2', () => {
+  // The docblock had this the wrong way round. At two levels one threshold band
+  // covers most of the flame body, so the dither punches holes through it rather
+  // than shading it, and levels 2 is exactly what the wide saved route forces.
+  const holes = (bitmap: content.Bitmap): number => {
+    let bad = 0
+    for (let c = 0; c < content.width(bitmap); c++) {
+      let top = -1
+      for (let r = ROWS - 1; r >= 0; r--) {
+        if (bitmap[r][c] > 0) {
+          top = r
+          break
+        }
+      }
+      for (let r = 0; r < top; r++) if (bitmap[r][c] === 0) bad++
+    }
+    return bad
+  }
+  for (const levels of LEVELS) {
+    const flat = fx.fire({ columns: 240, levels, dither: 'none' })
+    expect(`${levels} undithered: ${holes(flat)}`).toBe(`${levels} undithered: 0`)
+  }
+  // And the numbers the docblock now quotes, so a change to either has to say so.
+  expect(holes(fx.fire({ columns: 240, levels: 2 }))).toBe(93)
+  expect(holes(fx.fire({ columns: 240, levels: 4 }))).toBe(6)
+})
+
+test('fire leans by shearing the whole profile sideways, which is what rises', () => {
+  // "lean changes some pixels" would pass for any perturbation at all. The claim
+  // is stronger and exact: the tip line at height v is the v = 0 line shifted
+  // lean * v columns, which is the only way this panel can fake vertical motion.
+  const columns = 240
+  for (const lean of [3, 24, -12]) {
+    const leaned = fx.fireField({ lean })
+    const flat = fx.fireField({ lean: 0 })
+    let worst = 0
+    for (let row = 0; row < ROWS; row++) {
+      const v = row / (ROWS - 1)
+      for (let col = 0; col < columns; col++) {
+        const shifted = col - lean * v
+        worst = Math.max(
+          worst,
+          Math.abs(
+            leaned({ u: col / columns, v, col, row, columns }) -
+              flat({ u: shifted / columns, v, col: shifted, row, columns }),
+          ),
+        )
+      }
+    }
+    expect(`lean ${lean}: ${worst < 1e-9}`).toBe(`lean ${lean}: true`)
+  }
+})
+
 test('fire closes whatever it is leaning by, and the lean is really in the picture', () => {
   // lean shifts each row's profile by a constant, which cannot open a loop that
   // whole cycle counts close; it is diagonal structure, so it must change pixels.
@@ -401,4 +581,40 @@ test('fire closes whatever it is leaning by, and the lean is really in the pictu
     expect(fx.fieldGap(fx.fireField(opts), { columns: 240 })).toBeLessThan(1e-9)
   }
   expect(fx.fire({ columns: 64, lean: 0 })).not.toEqual(fx.fire({ columns: 64, lean: 4 }))
+})
+
+test('mirror closes for every continuous inner, and starfield is the one that does not', () => {
+  // The hole review-15's closure walk left: it went through the FIELDS registry, so it
+  // checked `mirror` with its default inner and each other generator alone. Nothing
+  // walked mirror AGAINST each inner, which is where the one failure lives. Found by
+  // review-13 while driving the app's own effect knobs, not by reading this file.
+  const inners = Object.keys(fx.FIELDS).filter((n) => n !== 'mirror')
+  const widths = [120, 240, 368, 480, fx.MAX_COLUMNS]
+  const open: string[] = []
+
+  for (const inner of inners) {
+    for (const columns of widths) {
+      for (const folds of [2, 4, 6, 10]) {
+        const gap = fx.fieldGap(fx.mirrorField({ inner, columns, folds }), { columns })
+        if (gap > 1e-9) open.push(`${inner} w=${columns} folds=${folds} gap=${gap.toFixed(3)}`)
+      }
+    }
+  }
+
+  // Named rather than counted, so a new generator that fails closure cannot hide inside
+  // a tolerance. starfield fails because it hashes a truncated column and the fold phase
+  // samples it between steps: a step function cannot be folded, and the phase that
+  // causes it is what puts the folds on the bridge instead of a column centre.
+  const failing = [...new Set(open.map((s) => s.split(' ')[0]))].sort()
+  expect(failing).toEqual(['starfield'])
+
+  // And the failure is gross, not marginal: this is a seam anyone would see in a loop
+  // that costs five page erases, which is why a caller offering inner choices has to run
+  // fieldGap per combination rather than once per generator.
+  const worst = Math.max(
+    ...widths.map((columns) =>
+      fx.fieldGap(fx.mirrorField({ inner: 'starfield', columns, folds: 4 }), { columns }),
+    ),
+  )
+  expect(worst).toBeGreaterThan(0.5)
 })

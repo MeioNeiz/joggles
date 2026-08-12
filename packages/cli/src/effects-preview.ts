@@ -32,6 +32,9 @@ const ABOUT: Record<string, string> = {
   mirror: 'kaleidoscope of any other effect, mirror axes crossing the nose bridge',
 }
 
+/** Effects whose own default differs from render's, so the help can say so. */
+const NO_DITHER = new Set(['starfield', 'mirror'])
+
 interface Args {
   name: string
   still: boolean
@@ -91,6 +94,8 @@ function usage(): void {
   --columns N    loop width, snapped down to a multiple of ${fx.TILE} (max ${fx.MAX_COLUMNS})
   --levels 2|4   2 for anything saved wider than the panel, 4 otherwise
   --dither none  quantise flat instead of shading. Sharper, more banded
+                 (already the default for ${[...NO_DITHER].join(' and ')}: pass
+                 --dither ordered for texture, which mirror pays for in symmetry)
   --still        print the whole strip once instead of animating
   --passes N     how many times round before it stops (default 2)
   --speed N      preview columns per second (device does ${fx.SLOWEST_SCROLL}-${fx.FASTEST_SCROLL})
@@ -102,7 +107,8 @@ Each effect also takes its own numbers, passed straight through:
   ripple --sources 3 --wavelength 6 --falloff 18
   starfield --density 0.12 --seed 1
   fire --tongue 12 --height 0.62 --flicker 0.33 --lean 3
-  mirror --inner plasma --folds 5   (the inner effect's own numbers pass through)`)
+  mirror --inner plasma --folds 5   (the inner effect's own numbers pass through;
+                                     folds snaps to a divisor of the width)`)
 }
 
 /**
@@ -111,7 +117,7 @@ Each effect also takes its own numbers, passed straight through:
  * The two numbers people get wrong: a loop with grey in it is type 2, so it is
  * 24 columns and gone at power off, and a loop is only seamless if it closes.
  */
-function report(bitmap: Bitmap, asked: number): void {
+function report(bitmap: Bitmap, asked: number, args: Args): void {
   const cols = content.width(bitmap)
   const saved: Content = {
     bitmap,
@@ -127,6 +133,19 @@ function report(bitmap: Bitmap, asked: number): void {
   for (let off = 0; off < cols; off++) hidden += viewport.hidden(bitmap, off, { wrap: true })
 
   console.log(`\ncolumns    ${cols}${asked === cols ? '' : ` (asked for ${asked})`}`)
+  if (args.name === 'mirror') {
+    // The snap moves what was asked for, and a silent move is how a preview ends
+    // up showing something other than the flags you typed.
+    const wanted = args.opts.folds as number | undefined
+    const folds = fx.mirrorFolds(cols, wanted)
+    const snapped =
+      wanted === undefined || wanted === folds
+        ? ''
+        : ` (asked for ${wanted}, snapped to a divisor of ${cols})`
+    console.log(
+      `folds      ${folds}${snapped}, a mirror axis every ${cols / (2 * folds)} columns`,
+    )
+  }
   console.log(
     `loop       ${fastest.toFixed(1)}s to ${slowest.toFixed(1)}s ` +
       `at the device's own SPEED range`,
@@ -211,7 +230,7 @@ try {
 
   console.log(`${args.name}: ${ABOUT[args.name] ?? ''}`)
   if (args.still) still(bitmap)
-  report(bitmap, asked)
+  report(bitmap, asked, args)
   if (!args.still) {
     console.log(`\n${args.passes} passes at ${args.speed} columns/second, Ctrl-C to stop\n`)
     await animate(bitmap, args.passes, args.speed)

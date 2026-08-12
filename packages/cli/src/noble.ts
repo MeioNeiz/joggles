@@ -12,6 +12,10 @@
  *  - `writeAsync`'s second argument is `withoutResponse`, the inverse of what
  *    `Transport.write` takes. Getting this backwards is silent: writes still land,
  *    just unacked, and the last column of a frame goes missing on disconnect.
+ *    **This is the one file no mock covers** - `MockTransport` stands in for
+ *    everything above it, and nothing can stand in for this - so a change in here is
+ *    only checked by running `bun cli text` on hardware and looking at the last
+ *    column. That is why the trap is written here rather than in a notes file.
  *  - Scanning needs the adapter powered on, which it may not be yet at import time.
  */
 import noble from '@abandonware/noble'

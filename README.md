@@ -27,6 +27,12 @@ pixel format and panel geometry.
     bun cli off
     bun cli ledger              # flash saves counted against each unit, no connection
 
+## Getting the app onto a phone
+
+`INSTALL.md`. Android is an APK on the
+[Releases page](https://github.com/MeioNeiz/joggles/releases), built with `bun run apk`.
+iPhone has no free route that lasts, and the options are ranked there.
+
 ## Our own firmware
 
     bun run build-firmware      # firmware/joggles-v1.bin, then ota-check it
@@ -64,12 +70,19 @@ The OTA image format is solved and both stock images round-trip byte-identically
 
     bun research/ota-codec.ts verify firmware/*.bin
 
-**Flashing a patched stock app image is now judged reasonably safe**, because the OTA is
-staged: it writes to a separate bank at `abs 0x29400` and never erases the running
-application, so an aborted transfer costs nothing. `research/firmware-flashing.md` has
-the evidence, the size envelope and the one remaining brick vector; it supersedes the
-older "not safe yet" verdict in `research/firmware-image-format.md`. Every image must
-pass `bun run ota-check <image> firmware/TR1906R04-10_OTA.bin` first.
+**Staging a patched stock app image over BLE is safe. Committing one is not.** The OTA
+stages to a separate bank at `abs 0x29400` and never erases the running application, so
+an aborted transfer costs nothing, and `bun run flash stage` has run on hardware with no
+harm. The commit is the other half: on 2026-08-08 a *stock over stock* commit bricked
+`GLASSES-12C3EF`, staging fine and the device's own CRC matching, and it never came back.
+`bun run flash commit` now refuses without `--ldrom-verified`, which nobody can honestly
+pass until LDROM has been dumped over SWD. `research/firmware-flashing.md` has the
+evidence and the size envelope, `research/brick-2026-08-08.md` the postmortem. Every
+image must still pass `bun run ota-check <image> firmware/TR1906R04-10_OTA.bin`.
+
+*Corrected 2026-08-11: this said flashing was "now judged reasonably safe" and that we
+could re-flash stock ourselves at any time. Re-flashing stock is precisely the capability
+the brick took away, and the image that bricked it was byte-identical stock.*
 
 Two physical gaps in the panel: the middle of the top row, and a triangular
 nose-bridge notch. `display.alive()` maps them.

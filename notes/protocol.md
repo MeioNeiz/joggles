@@ -25,9 +25,13 @@ the AD structure of type `0xFF` - see `ble/BleConfig.java`.
 | `0000fff0-0000-1000-8000-00805f9b34fb` | service |
 | `d44bc439-abfd-45a2-b575-925416129600` | command write |
 | `d44bc439-abfd-45a2-b575-925416129601` | notify (device replies) |
-| `d44bc439-abfd-45a2-b575-92541612960a` | bulk pixel upload |
-| `d44bc439-abfd-45a2-b575-92541612960b` | bulk pixel upload |
+| `d44bc439-abfd-45a2-b575-92541612960a` | `DATS` bulk upload stream |
+| `d44bc439-abfd-45a2-b575-92541612960b` | live columns and rhythm frames |
 | `00002902-0000-1000-8000-00805f9b34fb` | CCCD, to enable notifications |
+
+*Corrected 2026-08-11: this table called `960a` and `960b` both "bulk pixel upload",
+which is **wrong** and was contradicted by this file's own routing table twelve lines
+later. They are not interchangeable; see Channel routing.*
 
 **The service is `fff0`, not `fee9`.** `BleManager.UUID_SERVICE_TEXT` is `fff0` and
 that is what `onServicesDiscovered` matches on; the `fee9` in `AppConfig.java` is a
@@ -51,17 +55,17 @@ The key is not a Java string: `csh/tiro/cc/aes.java` is a JNI shim over
 `libAES.so`, and `keyExpansionDefault()` loads the constant from the native
 image. Recovered by brute-forcing all 13,809 16-byte windows of the 13.8 KB
 library against a known ciphertext, using the plaintext framing as the oracle -
-exactly one window produced a well-formed frame (`tools/find_key.py`).
+exactly one window produced a well-formed frame. The search itself was throwaway and
+was not kept; *corrected: this passage cited `tools/find_key.py`, which does not exist
+and could not, since the repo is Bun and TS only.*
 
 The published Shining Mask key `32672f7974ad43451d9c6c894a0e8764` does **not**
 work here, despite the shared `d44bc439-...` UUID family.
 
 ## Frame format
 
-    [len][opcode ASCII...][args...][zero padding to 16 bytes]
-
-`len` counts opcode plus arguments, excluding padding. Opcodes are uppercase
-ASCII, which is what makes a correct decryption self-evident.
+`packages/core/src/protocol.ts:1-10` owns the layout. The part it cannot say: opcodes
+are uppercase ASCII, which is what makes a correct decryption self-evident.
 
 Verified end to end: `enter_diy()` encrypts to `3b3eb0f5954bdabde610174b52bfcecb`,
 identical to the byte sequence the real app sends.
@@ -75,45 +79,64 @@ Transcribed from `model/data/Agreement.java`. jadx renders the byte literals as
 fastjson2 constant names; resolved values are `D`=68, `G`=71, `H`=72, `M`=77,
 `N`=78.
 
+**A row marked † reaches no handler on our unit.** The table is the app's, not the
+device's, so it is a decoding aid rather than a menu.
+
 | Command | Frame | Notes |
 | --- | --- | --- |
-| `STYPE` | `05 STYPE` | query panel size, reply on notify char |
+| `STYPE` † | `05 STYPE` | query panel size, reply on notify char |
 | `SMVEW 01` | `06 SMVEW 01` | enter DIY mode |
 | `SMVEW 03` | `06 SMVEW 03` | enter DIY, alternate |
 | `SMVEW 02` | `06 SMVEW 02` | exit DIY and save |
 | `SMVEW 00` | `06 SMVEW 00` | exit DIY without saving |
-| `LIGHT n` | `06 LIGHT n` | brightness |
-| `LEDON` / `LEDOFF` | `05` / `06` | panel on/off |
-| `LIGHTON` / `LIGHTOFF` | `07` / `08` | flashlight |
+| `LIGHT n` | `06 LIGHT n` | brightness, and it floors at level 1 |
+| `LEDON` / `LEDOFF` † | `05` / `06` | panel on/off; **`CLRL` is the only way dark** |
+| `LIGHTON` / `LIGHTOFF` † | `07` / `08` | flashlight |
 | `SPEED n` | `06 SPEED n` | animation speed |
-| `EVERT` | `05 EVERT` | invert display |
+| `EVERT` † | `05 EVERT` | invert display |
 | `ANIM n` | `05 ANIM n` | built-in animation |
-| `LOOA` | `04 LOOA` | loop animations |
+| `LOOA` † | `04 LOOA` | loop animations; the firmware matches **`LOOP`** |
 | `IMAG n` | `05 IMAG n` | built-in image |
+| `CLRL` | `04 CLRL` | atomic clear; the vendor app never emits it |
 | `MODE 01` | `05 MODE 01` | static |
-| `MODE 02 hi lo` | `07 MODE ...` | flashing, 16-bit rate |
+| `MODE 02 hi lo` | `07 MODE ...` | **mislabelled**: no 16-bit rate exists, see below |
 | `MODE 03 n` | `06 MODE 03 n` | **mislabelled**, see "Two display paths" below |
 | `MODE 04 n` | `06 MODE 04 n` | **mislabelled**, dead code in the app |
-| `MODE 07` | `05 MODE 07` | "RP" mode |
-| `MODE 08 n` / `MODE 09 n` | `06` | connect-roll right / left |
-| `STOPR` | `05 STOPR` | stop rhythm mode |
+| `MODE 07` † | `05 MODE 07` | "RP" mode |
+| `MODE 08 n` / `MODE 09 n` † | `06` | connect-roll right / left |
+| `STOPR` † | `05 STOPR` | stop rhythm mode |
 | `SOUT` | `04 SOUT` | exit rhythm mode |
-| `LEDFIRST` / `LEDSECOND` | `08` / `09` | address lens 1 or 2 |
-| `SCHD on h m` | `07 SCHD ...` | scheduled on/off timer |
-| `STSC` | `04 STSC` | read timer setting |
-| `CALL st t` | `06 CALL ...` | incoming-call display |
+| `LEDFIRST` / `LEDSECOND` † | `08` / `09` | address lens 1 or 2 |
+| `SCHD on h m` † | `07 SCHD ...` | scheduled on/off timer |
+| `STSC` † | `04 STSC` | read timer setting |
+| `CALL st t` † | `06 CALL ...` | incoming-call display |
 | `DATS t hi lo` | `07 DATS ...` | announce a bulk upload, type + 16-bit length |
 | `DATCP` | `05 DATCP` | bulk upload complete, device verifies and stores |
-| `COLR` | `08 COLR ...` | colour, never emitted by the app |
-| `LEVL` | `06 LEVL ...` | level, never emitted by the app |
-| `POWR` | `05 POWR ...` | power, never emitted by the app |
+| `COLR` † | `08 COLR ...` | colour, never emitted by the app |
+| `LEVL` † | `06 LEVL ...` | level, never emitted by the app |
+| `POWR` † | `05 POWR ...` | power, never emitted by the app |
+
+The daggers come from the "Absent from the firmware" group in
+`packages/core/src/protocol.ts`, which is canonical, and behind it the hand-checked
+opcode scan in `research/firmware-internals.md`. The dispatcher handles eleven opcodes
+and no daggered one is among them, so **sending one is a silent no-op, not an error**
+(*derived*). Three specifics worth carrying out of that:
+
+- **`LEDOFF` does nothing, and `LIGHT` floors at level 1**, so `CLRL` is the only route
+  to a dark panel.
+- **`LOOA` is this table's transcription of the app; the firmware matches `LOOP`**
+  (`4c 4f 4f 50` at `abs 0x182ac`, *verified* in the image). Which of the two the app
+  really sends has never been checked on the wire.
+- `MODE 07`/`08`/`09` fail on the argument rather than the opcode: the parser accepts
+  only 1, 2 and 3. `MODE 02` itself is live, and its second byte is a direction flag
+  rather than the high half of a rate.
 
 Device replies on the notify characteristic: `DATSOK`, `DATCPOK`, `ERROR`. These
 three are the only notifications the app parses, and all belong to `DATS`.
 
 Which of these the app actually emits, and which are library dead code, is listed
-in `research/vendor-app-protocol.md`. Dead in the app does not mean unsupported by
-the firmware: `SMVEW 02` is dead in the app and works on our unit.
+in `research/vendor-app-protocol.md`. Dead in the app does not mean absent from the
+firmware: `SMVEW 02` is dead in the app and works on our unit.
 
 ## Panel geometry - confirmed on hardware
 
@@ -121,12 +144,9 @@ Our unit (`GLASSES-12C3EF`) does **not** answer `STYPE`, on either
 write-without-response or write-with-response, so geometry was derived
 empirically instead.
 
-| Property | Value |
-| --- | --- |
-| Grid | 9 rows x 24 columns |
-| Origin | row 0 = bottom, column 0 = left |
-| Row packing | row `r` -> bit `2*r` of the 3-byte column word |
-| Bits per pixel | 2 (only the even bit is needed to light a pixel) |
+`packages/core/src/display.ts:1-24` states the geometry it produced: 9 rows x 24
+columns, row 0 bottom, column 0 left, row `r` at bit `2*r` of the 3-byte column word,
+two bits per pixel. What follows is the measurement behind it.
 
 The two-bits-per-pixel stride is the non-obvious part. Lighting bit `n` lands on
 row `n // 2`, verified at bits 0, 11, 13, 15 and 16, and confirmed by drawing
@@ -171,24 +191,22 @@ Two physical gaps, mapped by drawing a full border and noting what was missing:
     #........#....#........#   nose-bridge notch, 2 rows tall,
     #########......#########   6 wide at the bottom
 
-`display.alive(row, col)` encodes this; `display.edge_pixels()` traces the true
-silhouette. Confirmed correct against the hardware.
+Confirmed correct against the hardware, and `display.alive()` encodes it. Everything
+downstream (the usable band, the silhouette) is computed from that mask rather than
+written down, so it cannot drift.
 
-Practical consequence: **rows 2-7 are the only band alive across all 24
-columns**, so text lives there. That is a 6-row band, hence the 5-row font.
+## Live column format
 
-## Bulk pixel format
+`packages/core/src/protocol.ts:150-153` owns the format. Verified: `column(0, 030000)`
+encrypts to `dde2655d6e7a9923a30db0f1f9e97ce4`, identical to the reference capture,
+which batched 24 columns per write.
 
-One 16-byte block per display column, same encryption:
-
-    [04][column index][3 bytes column bitmap][zero padding]
-
-24 columns per write batch in the reference capture. Three bytes gives 24 bits
-of vertical resolution, enough for any of the panel sizes above. Row 6 of the
-capture sets 14 consecutive bits, consistent with a 14-row panel.
-
-Verified: `column(0, 030000)` encrypts to `dde2655d6e7a9923a30db0f1f9e97ce4`,
-identical to the capture.
+*Corrected 2026-08-11.* This section read the three bytes as "24 bits of vertical
+resolution" and added that row 6 of the reference capture sets 14 consecutive bits,
+"consistent with a 14-row panel". **That inference was wrong.** The capture is of a
+different model in the family; this panel is 9 rows, measured on hardware above. It is
+also the origin of the 7+7 DATS row split corrected further down, so it cost more than
+a stray sentence.
 
 ## Hardware quirks that cost real time
 
@@ -201,12 +219,13 @@ Throughput comes from pacing, not from larger writes.
 **Write-without-response has no flow control.** 24 back-to-back column writes
 overrun the controller and some are dropped, leaving those columns showing the
 previous frame - stuck LEDs during animation. Roughly 20 ms between writes is
-enough. `client.Glasses.show()` handles both of these.
+enough. `Glasses.show()` handles both of these.
 
 **Leaving DIY mode restores the saved image.** `SMVEW 00` hands the display back
 to whatever was stored from the vendor app, so our frame vanishes and the old
-message reappears looking like stray pixels. Stay in DIY (`end(mode="keep")`)
-to keep a drawn frame up; use `LEDOFF` for a genuinely dark panel.
+message reappears looking like stray pixels. Stay in DIY (`end('keep')`) to keep a
+drawn frame up; use `CLRL` for a genuinely dark panel. *Corrected: this said `LEDOFF`,
+which reaches no handler, so it was advice that silently did nothing.*
 
 **No double buffering, and it cannot be fixed by going faster.** Columns land
 one at a time, so a streamed full-panel update visibly sweeps left to right.
@@ -255,41 +274,29 @@ The device is **not** a dumb frame buffer. There are two separate things:
 Sending any `MODE` command while in DIY switches away from the live buffer to
 the stored content. Every early test did this and threw the drawing away.
 
-**`MODE`'s second byte is not speed.** Speed has its own opcode (`SPEED n`). Treat
-the earlier "scroll left at speed n" labelling in the command table as **wrong**.
+**`MODE`'s second byte is not speed.** Treat the earlier "scroll left at speed n"
+labelling in the command table as **wrong**: speed has its own opcode, and the byte is a
+direction flag. Arguments, and which helpers were wrong and what replaced them:
+`packages/core/src/protocol.ts:117-134`.
 
-It is not a slot index either, at least not as the app uses it. The app emits
-`getContentCommand(mode, dir)` -> `06 MODE <mode> <dir>` with `mode` 1 static, 2
-horizontal scroll, 3 vertical scroll, and `dir` only ever 0 or 1. The
-`getRollToLeft/RightCommand` variants that suggested a count are dead code, as is
-`SPEED`'s neighbour set. So in the app the second byte is a **direction flag**.
-
-That leaves a genuine tension: cycling `MODE 01 <n>` for n=0..7 produced different
-displays on our unit. Both can hold if the firmware reads the byte more liberally
-than the app ever writes it. Unresolved, and worth a careful sweep.
+**The byte is boolean, so `MODE 01 <n>` has two displays and not eight** (static, and
+static inverted by an `XOR 0xffff` at `abs 0x21ff6`; *derived* from the dispatch, see the
+`MODE` analysis in `research/firmware-internals.md`). *Corrected: this file recorded
+cycling n=0..7 on our unit as producing eight different displays and called the tension
+unresolved. Keep the observation - whatever varied, it was not the second byte, and that
+is still unexplained.*
 
 The device animates stored content by itself, with nothing connected: `MODE 03`
 produced text bouncing left-to-right unattended. So upload-once-then-disconnect
 is viable in principle, once we know how to get our content into the slot the
 `MODE` commands read.
 
-**How to get content into that slot: the `DATS`/`DATCP` handshake.** This is the
-app's real persist-to-device path and it was missing from this document entirely:
+**How to get content into that slot: the `DATS`/`DATCP` handshake**, described below and
+owned by `packages/core/src/dats.ts`. The evidence that it is the device's own and not
+the app's: all three reply strings sit in the firmware image at body offset `0x1dbc`.
 
-    DATS <type> <len16>   on ...9600      07 44 41 54 53 tt hh ll
-    -> DATSOK             on ...9601
-    stream len bytes      on ...960a      [count][up to 15 data bytes] per block
-    DATCP                 on ...9600      05 44 41 54 43 50
-    -> DATCPOK            on ...9601      or ERROR
-
-`type` is 1 for text and 2 for a DIY image; those are the only values the app
-uses. Length is 16-bit, so up to 65535 bytes may be announced. All three reply
-strings sit in the firmware image at body offset `0x1dbc`, which confirms the
-handshake is firmware-side. There is no slot argument: one buffer per type.
-
-Note that `SMVEW 02` is **dead code in the app** (zero callers), yet our hardware
-test shows the device honours it. Dead in the app does not mean absent from the
-firmware, so the dead-code list below is a menu to try, not a list to discount.
+Note that `SMVEW 02` is **dead code in the app** (zero callers), yet our hardware test
+shows the device honours it. Dead in the app does not mean absent from the firmware.
 
 ### Buffer width
 
@@ -303,10 +310,12 @@ it in a single `DATS 01 <len>`, and only then sends one `MODE` command. Its
 in around 400 bytes. So wide device-side scrolling is real; the earlier failure
 was writing wide into the live buffer instead of uploading to the saved store.
 
-Untested and the obvious next experiment: `DATS` type 2 with a length greater than
-72 bytes, then drive it with `MODE`, watching `...9601` for `DATCPOK` versus
-`ERROR`. That also gives us a working request/response probe, which matters
-because our unit never answers `STYPE`.
+**Type 2 wider than the vendor's 72 bytes: done, 2026-08-09.** Accepted to 383 columns,
+`ERROR` at 384, displays only its first 24, writes no flash, and **do not send `MODE`
+after it** - that switches to the type 1 store with no way back and destroys the image.
+See "The experiment that was worth running" in `research/vendor-app-protocol.md`.
+*Corrected: this said "then drive it with `MODE`", which would have thrown away the
+result it was measuring.*
 
 ### Cross-checking against a live capture
 
@@ -323,8 +332,6 @@ the OTA channels are the one exception: those writes are **not** encrypted.
 
 ## Channel routing
 
-Settled from the app's characteristic map.
-
 | Characteristic | Role |
 | --- | --- |
 | `...9600` | commands, including `DATS` and `DATCP` |
@@ -332,49 +339,46 @@ Settled from the app's characteristic map.
 | `...960a` | `DATS` bulk stream, count-prefixed blocks |
 | `...960b` | live/real-time: per-column DIY writes and rhythm frames |
 
-So the `[04][column][3 bytes]` format documented above is the **live** format on
-`...960b`. The `DATS` stream on `...960a` is a different encoding: a flat
-concatenation of columns, 2 bytes per column for text and 3 for a DIY image.
+Three different pixel encodings ride these channels and are easy to confuse: see
+"Three distinct pixel encodings" in `research/vendor-app-protocol.md`, which holds
+the version with the correction record.
 
 
 ## DATS/DATCP: storing content wider than the panel
 
-**This is the mechanism the vendor app uses for real messages**, and it is
-entirely separate from the DIY column path. Source of truth is
-`model/data/TextAgreement.java`, confirmed against a full HCI capture.
+Recovered from `model/data/TextAgreement.java` and confirmed against a full HCI
+capture. `packages/core/src/dats.ts` owns the handshake and both payload encodings.
 
 ### Handshake
 
-    app -> cmd char (9600)   [07]["DATS"][01][len_hi][len_lo]
-    dev -> notify (9601)     "DATSOK"
-    app -> data char (960a)  [len][up to 15 payload bytes]   xN, ~50ms apart
-    app -> cmd char          [05]["DATCP"]
-    dev -> notify            "DATCPOK"  or  "ERROR"
-
-Length is 16-bit big-endian (`Agreement.int2Bytes` = `[i/256, i%256]`).
-
-**Data chunks are framed, not raw.** Each 16-byte block is `[length][15 bytes of
-payload]`. Reassembly must strip that prefix; concatenating the full 16 bytes
-shifts the whole bitmap and produces convincing-looking garbage.
-
-Note the characteristic split: commands go to `9600` (`writeCharacteristic`),
-bulk data to **`960a`** (`writeCharacteristicBy2`). Our DIY code uses `960b`,
-which the reference capture used. Both bulk characteristics exist.
+The one trap worth repeating: **data chunks are framed, not raw.** Each 16-byte block is
+`[length][15 bytes of payload]`, so reassembly must strip that prefix. Concatenating the
+full 16 bytes shifts the whole bitmap and produces convincing-looking garbage.
 
 ### Payload format
 
-16-bit little-endian per display column, 14 rows:
+Type 1 is 16-bit little-endian per display column, one bit per pixel, addressing the
+panel's **9 rows**:
 
-    bits 0-6   rows 0-6
-    bit  7     unused
-    bits 8-14  rows 7-13
-    bit  15    unused
+    bits 0-6   rows 1-7
+    bit  7     row 8
+    bit  15    row 0
+    bits 8-14  nothing
 
-This is a **different pixel encoding from the DIY path**, which uses 3 bytes per
-column at bit stride 2. Do not mix them up.
+*Corrected 2026-08-11.* This file read the format as **14 rows in a 7+7 split** - bits
+0-6 as rows 0-6, bits 8-14 as rows 7-13, bits 7 and 15 unused - and that reading is
+**wrong**. It came from the 14-row inference now corrected under "Live column format".
+It is what `packages/core/src/dats.ts` encoded until 2026-08-09, and under it every
+9-row bitmap drew **one row too high** and **silently dropped rows 7 and 8**. It never
+bit us only because every upload so far has been 5-row text.
+
+Still *derived*: two independent firmware paths agree (the byte swap at
+`abs 0x1864e` and the frame builder at `abs 0x221c8`) and no hardware has confirmed it.
+It is verify item 1 in `notes/app-plan.md`, settled by one upload of a single column
+with only row 8 set. `packages/core/src/dats.ts` is canonical for the mapping.
 
 Verified end to end: a captured 178-byte upload reassembles into 89 columns that
-render as "ZZZ HELLO WORLD ZZZ" in the low 7 bits, the high field empty.
+render as "ZZZ HELLO WORLD ZZZ" in rows 1-7, the high field empty.
 
 ### Why this matters
 
@@ -468,14 +472,24 @@ Answered since the last pass:
 - [x] **Our unit's panel size via `STYPE`.** No route through the app: it never
       sends `STYPE`, and its `parseType` only knows 5x36, 12x48, 14x56 and 16x64,
       none of which match 9x24. Empirical mapping stays the only option.
+- [x] **`DATS` type 2 with a payload wider than 72 bytes.** Accepted to 383 columns,
+      `ERROR` at 384, and only the first 24 are ever displayed, so the width buys
+      nothing (2026-08-09). See Buffer width above.
+- [x] **The odd bit of each pixel pair.** Brightness: the panel is 4-level greyscale,
+      *verified* twice on hardware. See Panel geometry.
+- [x] **`MODE`'s second byte.** Boolean, tested only for zero versus non-zero, so two
+      displays and not eight (*derived*, from the firmware's dispatch).
 
 Still open:
 
-- [ ] Bit order within the 3-byte column: MSB-first assumed, unverified
-- [ ] `MODE` second byte: direction in the app, but n=0..7 differ on hardware
-- [ ] `DATS` type 2 with a payload wider than 72 bytes
-- [ ] `LEDFIRST`/`LEDSECOND` lens select, and the odd bit's meaning
-- [ ] `COLR`, `LEVL`, `POWR`: real opcodes in the app's tables, never emitted
+- [ ] Bit order within the 3-byte column: MSB-first assumed, *unverified*
+- [ ] What varied when `MODE 01 <n>` was cycled n=0..7 on our unit and appeared to give
+      eight displays. The second byte is boolean, so it was something else
+- [ ] Whether anything daggered in the command table does something anyway. The
+      firmware handles eleven opcodes and `COLR`, `LEVL`, `POWR`,
+      `LEDFIRST`/`LEDSECOND` and the rest are not among them (*derived*, see the
+      "Absent from the firmware" group in `packages/core/src/protocol.ts`), so a sweep
+      would only confirm silence. There is no lens select to find
 - [ ] **A third service, `ae00`.** A GATT dump of a device in this family shows
       `ae00` alongside `fff0` and `fd00`, with `ae01` write-without-response and
       `ae02` notify. `ae02` answered a raw ping with
@@ -490,6 +504,9 @@ Still open:
 - `research/vendor-app-protocol.md` - the `DATS`/`DATCP` subsystem in full, the
   complete live-versus-dead opcode inventory, `IMAG`/`ANIM` bank ranges, and every
   hard limit with its source.
+- `research/firmware-internals.md` - the dispatcher's real eleven opcodes with their
+  addresses, the `MODE` table, and the trust tier of every claim. It extends and in
+  places corrects this file; where the two disagree, it has seen the image bytes.
 - `research/firmware-image-format.md` - the OTA container (solved: XOR pad plus a
   CRC-32 over the deobfuscated body, no signature), what is inside the firmware,
   and why flashing is still not safe.
