@@ -24,6 +24,7 @@ import type { Discovered, Scanner, Transport } from '@joggles/core'
 import { PermissionsAndroid, Platform } from 'react-native'
 import { BleManager, type Device, type Subscription } from 'react-native-ble-plx'
 import { fromBase64, toBase64 } from './base64.js'
+import { FAKE_AVAILABLE, FakeScanner } from './fake-glasses.js'
 
 /**
  * Ask for what Android 12+ actually needs.
@@ -98,6 +99,32 @@ class BleTransport implements Transport {
   }
 }
 
+/**
+ * What a caller may ask of one scan.
+ *
+ * `duplicates` is **iOS only** in ble-plx: CoreBluetooth otherwise reports each
+ * peripheral once per scan, where Android reports every advert it hears whatever this
+ * says. Off by default because it was off before, and the only caller that needs it is
+ * the proximity count, which cannot tell that a pair has left without re-sightings
+ * (`proximity.ts`).
+ */
+export interface ScanTuning {
+  duplicates?: boolean
+}
+
+/**
+ * One value for "no reading", because `Discovered.rssi` is a plain `number`.
+ *
+ * Two sentinels arrive here and both mean the same nothing: `null`, and Android's `127`
+ * for a scan result whose RSSI is unavailable. Either one taken as dBm is a signal
+ * **stronger than a pair in your hand**, so a reader that forgets to filter shows the
+ * pair it cannot hear at the top of the list. Folding them into a single `0` means one
+ * case downstream instead of two. Every reader must still refuse it: `proximity.usable()`
+ * is what does that, and `signalText()` is what prints it as "no reading".
+ */
+const noReading = (rssi: number | null | undefined): number =>
+  rssi == null || rssi >= 0 ? 0 : rssi
+
 export class BleScanner implements Scanner {
   private manager = new BleManager()
 
@@ -142,16 +169,21 @@ export class BleScanner implements Scanner {
     })
   }
 
-  async scan(onFound: (unit: Discovered) => void): Promise<void> {
+  /**
+   * Optional per-scan tuning. Additive: the defaults are what this scanner has always
+   * done, so a caller that passes nothing sees no change.
+   */
+  async scan(onFound: (unit: Discovered) => void, tuning: ScanTuning = {}): Promise<void> {
     if (!(await requestPermissions())) throw new Error('bluetooth permission refused')
     await this.ready()
     await this.release()
-    await this.manager.startDeviceScan(null, { allowDuplicates: false }, (error, device) => {
+    const allowDuplicates = tuning.duplicates ?? false
+    await this.manager.startDeviceScan(null, { allowDuplicates }, (error, device) => {
       if (error || !device) return
       // localName is the advert; name can be a cached GAP name, so prefer the advert.
       const name = device.localName ?? device.name ?? ''
       if (!this.prefixes.some((prefix) => name.startsWith(prefix))) return
-      onFound({ id: device.id, name, rssi: device.rssi ?? 0 })
+      onFound({ id: device.id, name, rssi: noReading(device.rssi) })
     })
   }
 
@@ -174,5 +206,78 @@ export class BleScanner implements Scanner {
  * screen that replaces it: destroying the manager on unmount would kill the
  * connection that unmounting was caused by. Module scope also stops a re-render
  * spawning a second native manager.
+ *
+ * **It delegates rather than being a `BleScanner` outright**, so that dev builds can
+ * point the whole app at a simulated pair (`fake-glasses.ts`, track 40) without any
+ * screen knowing. A `let` export would have done it in one line and is what this
+ * nearly was: live bindings across Metro's module wrapper are not something to bet a
+ * festival on, and every call site reads `scanner.x()`, so a delegate costs nothing
+ * and cannot half-work.
+ *
+ * The real manager is built lazily. Constructing a `BleManager` asks the platform for
+ * the adapter, and a dev session driving the fake pair should not have to answer a
+ * Bluetooth prompt to do it.
  */
-export const scanner = new BleScanner()
+class ActiveScanner implements Scanner {
+  private real: BleScanner | null = null
+
+  private fake: Scanner | null = null
+
+  /** Never true in a release build: `useFakeGlasses` refuses to set it. */
+  private faking = false
+
+  private active(): Scanner {
+    if (this.faking && this.fake !== null) return this.fake
+    this.real ??= new BleScanner()
+    return this.real
+  }
+
+  /** Whether the app is currently talking to a simulated pair. */
+  get simulated(): boolean {
+    return this.faking && this.fake !== null
+  }
+
+  /**
+   * Point the app at the fake pairs, or back at the radio.
+   *
+   * Refused unless `FAKE_AVAILABLE`, which is `__DEV__`. That is deliberately a
+   * hard refusal rather than a stored preference the release build ignores: the
+   * failure this guards against is someone at a festival whose app is confidently
+   * driving a pair that does not exist, which looks exactly like working.
+   */
+  async useFake(on: boolean, make: () => Scanner): Promise<boolean> {
+    if (on && !FAKE_AVAILABLE) return false
+    await this.active().stop().catch(() => {})
+    this.faking = on
+    if (on) this.fake ??= make()
+    return this.simulated
+  }
+
+  scan(onFound: (unit: Discovered) => void, tuning: ScanTuning = {}): Promise<void> {
+    const at = this.active()
+    return at instanceof BleScanner ? at.scan(onFound, tuning) : at.scan(onFound)
+  }
+
+  stop(): Promise<void> {
+    return this.active().stop()
+  }
+
+  connect(id: string): Promise<Transport> {
+    return this.active().connect(id)
+  }
+}
+
+export const scanner = new ActiveScanner()
+
+/** Turn the simulated pair on or off. Returns whether it is now on. */
+export const useFakeGlasses = (on: boolean): Promise<boolean> =>
+  scanner.useFake(on, () => new FakeScanner())
+
+/**
+ * Re-exported so screens reach the fake through this file and never directly.
+ *
+ * One door in is what stops a screen showing simulated state beside real state with
+ * nothing saying which is which, and `fake-glasses.test.ts` holds it: the only
+ * module in the app allowed to import `fake-glasses.js` is this one.
+ */
+export { FAKE_AVAILABLE } from './fake-glasses.js'
