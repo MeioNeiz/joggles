@@ -25,6 +25,7 @@ import { display, viewport } from '@joggles/core'
 import { memo, useEffect, useMemo, useState } from 'react'
 import { type StyleProp, StyleSheet, View, type ViewStyle } from 'react-native'
 import { stepClock } from './clock.js'
+import { runsOf, runWidth } from './panel-runs.js'
 import { DEFAULT_THEME, THEMES, type Theme, useTheme } from './theme.js'
 
 /** Rows top-first, because row 0 is the bottom of the panel. */
@@ -33,10 +34,7 @@ const ORDER = Array.from({ length: display.ROWS }, (_, i) => display.ROWS - 1 - 
 /** See the loop-gap research; `uploaded` walks the bitmap alone. */
 const LOOP = 'panel' as viewport.LoopModel
 
-/** The physical holes. Fixed geometry, so there is no reason to ask twice. */
-const ALIVE = Array.from({ length: display.ROWS }, (_, r) =>
-  Array.from({ length: display.COLS }, (_, c) => display.alive(r, c)),
-)
+/** The physical holes are `panel-runs.ts`'s, applied as it merges. */
 
 const styles = StyleSheet.create({
   panel: { backgroundColor: '#000', padding: 8, borderRadius: 6, alignSelf: 'center' },
@@ -45,48 +43,61 @@ const styles = StyleSheet.create({
   dead: { backgroundColor: 'transparent' },
 })
 
-/** Levels 0 to 3, where 0 is the unlit pixel this grid owns. */
-type Lit = readonly StyleProp<ViewStyle>[]
+/** This grid's geometry: an 11px pixel carrying 1 of margin a side sits on a 13 pitch. */
+const PITCH = 13
+const MARGIN = 1
+
+/** Every run length a row can hold, indexed by cells. Widths, so `runWidth` runs once. */
+const WIDE = Array.from({ length: display.COLS + 1 }, (_, cells) => ({
+  width: runWidth(cells, PITCH, MARGIN),
+}))
+
+/** Every appearance a run can have: `[cls + 1][cells]`, where `HOLE` is cls -1. */
+type Skins = readonly (readonly StyleProp<ViewStyle>[])[]
 
 /**
- * Every appearance a pixel can have, per theme, built once: a fresh `[a, b]` style
- * array per render makes all 216 views take a native update even when nothing changed.
+ * Every appearance a run can have, per theme, built once: a fresh `[a, b]` style array
+ * per render makes every view take a native update even when nothing changed, and a run
+ * needs its length in the style as well as its colour, which is more to rebuild rather
+ * than less.
  *
  * Which hue is the connected pair's business (`theme.ts`), so the table is built for
- * every theme at load rather than for the current one at render, and a pixel that did
- * not change still diffs to the same reference after a theme switch.
+ * every theme at load rather than for the current one at render, and a run that did not
+ * change still diffs to the same reference after a theme switch.
  */
-const HOLE = [styles.pixel, styles.dead]
-const LIT: Record<string, Lit> = Object.fromEntries(
+const SKINS: Record<string, Skins> = Object.fromEntries(
   THEMES.map((t) => [
     t.id,
-    [styles.pixel, ...t.levels.map((colour) => [styles.pixel, { backgroundColor: colour }])],
+    [
+      [styles.pixel, styles.dead],
+      styles.pixel,
+      ...t.levels.map((colour) => [styles.pixel, { backgroundColor: colour }]),
+    ].map((base) => WIDE.map((wide) => [base, wide])),
   ]),
 )
 
-const litFor = (theme: Theme): Lit => LIT[theme.id] ?? LIT[DEFAULT_THEME.id]
-
-const skin = (lit: Lit, alive: boolean, level: number) =>
-  alive ? (lit[level] ?? lit[0]) : HOLE
+const skinsFor = (theme: Theme): Skins => SKINS[theme.id] ?? SKINS[DEFAULT_THEME.id]
 
 /**
  * One row, redrawn only when its own values change: `levels` is 24 digits, so
- * React's shallow compare settles it in one string comparison. `lit` is one reference
+ * React's shallow compare settles it in one string comparison. `skins` is one reference
  * per theme, so it costs the compare nothing and still repaints when the pair changes.
+ *
+ * A View per run rather than per pixel, which is `panel-runs.ts` and its measurements.
  */
 const Row = memo(function Row({
   row,
   levels,
-  lit,
+  skins,
 }: {
   row: number
   levels: string
-  lit: Lit
+  skins: Skins
 }) {
   return (
     <View style={styles.row}>
-      {ALIVE[row].map((alive, col) => (
-        <View key={col} style={skin(lit, alive, Number(levels[col]))} />
+      {runsOf(row, (col) => Number(levels[col])).map((run, i) => (
+        <View key={i} style={skins[run.cls + 1]?.[run.cells]} />
       ))}
     </View>
   )
@@ -104,11 +115,11 @@ function strings(frame: number[][]): string[] {
 /** The one place both components go through, so the theme is read once, here. */
 const Strip = memo(function Strip({ rows }: { rows: string[] }) {
   const theme = useTheme()
-  const lit = litFor(theme)
+  const skins = skinsFor(theme)
   return (
     <View style={styles.panel}>
       {rows.map((levels, i) => (
-        <Row key={ORDER[i]} row={ORDER[i]} levels={levels} lit={lit} />
+        <Row key={ORDER[i]} row={ORDER[i]} levels={levels} skins={skins} />
       ))}
     </View>
   )

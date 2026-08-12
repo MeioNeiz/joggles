@@ -218,8 +218,13 @@ export function AnimationPack({
         data={grid}
         keyExtractor={(r) => r.key}
         keyboardShouldPersistTaps="handled"
-        initialNumToRender={6}
-        windowSize={5}
+        // A row is PER_ROW panels and a panel is a View per run, so these two numbers are
+        // how many hundred Views stand between a tap and anything on screen. Six rows
+        // mounted 18 panels for a screen that shows about six, which is the same defect
+        // measured on the Show tab (7.4s to first paint, `panel-runs.ts`).
+        initialNumToRender={2}
+        windowSize={3}
+        maxToRenderPerBatch={2}
         removeClippedSubviews
         ListEmptyComponent={
           <View style={styles.empty}>

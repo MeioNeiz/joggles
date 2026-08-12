@@ -73,17 +73,16 @@ import {
   planTap,
   thumbFor,
 } from '../one-tap.js'
+import { runsOf, runWidth } from '../panel-runs.js'
 import { MIN_ITEMS, reelResident } from '../reel.js'
 import { settings } from '../settings-store.js'
-import { DEFAULT_THEME, THEMES, useTheme } from '../theme.js'
+import { DEFAULT_THEME, THEMES, type Theme, useTheme } from '../theme.js'
 import { ActionMenu, Chip, ChipRow, INK, Link, type MenuOption, type Status } from '../ui.js'
 
 /** Rows top-first, because row 0 is the bottom of the panel. As `Preview.tsx`. */
 const ORDER = Array.from({ length: display.ROWS }, (_, i) => display.ROWS - 1 - i)
 
-const ALIVE = Array.from({ length: display.ROWS }, (_, r) =>
-  Array.from({ length: display.COLS }, (_, c) => display.alive(r, c)),
-)
+/** The physical holes are `panel-runs.ts`'s, applied as it merges. */
 
 const PER_ROW = 3
 
@@ -559,8 +558,18 @@ export function Library({
         sections={groups}
         keyExtractor={(row) => row.key}
         contentContainerStyle={styles.wrap}
-        initialNumToRender={8}
-        windowSize={5}
+        // Two rows, not eight. A row is PER_ROW tiles and a tile is a panel of Views, so
+        // `initialNumToRender` is really "how many hundred Views before anything paints":
+        // at 8 it mounted 24 tiles for a screen that shows about 6, and the Show tab took
+        // 7.4s to first paint on a Pixel 10 Pro with 170-frame stalls (measured
+        // 2026-08-12, before this). The rest arrive per batch while the eye is already on
+        // the first screenful.
+        initialNumToRender={2}
+        windowSize={3}
+        maxToRenderPerBatch={2}
+        // Android only, and it is the other half of a long grid: rows scrolled well past
+        // give their Views back instead of holding every one ever mounted.
+        removeClippedSubviews
         stickySectionHeadersEnabled={false}
         // Without `handled`, the first tap on a result only dismisses the keyboard and
         // the tile does not fire: a two-tap show, which is the one thing this screen
@@ -791,20 +800,31 @@ const styles = StyleSheet.create({
   dead: { backgroundColor: 'transparent' },
 })
 
-/** Levels 0 to 3, where 0 is the unlit pixel this grid owns. As `Preview.tsx`. */
-type Lit = readonly StyleProp<ViewStyle>[]
+/** This grid's geometry: a 3px pixel carrying 0.5 of margin a side sits on a 4 pitch. */
+const PITCH = 4
+const MARGIN = 0.5
 
-/** One table per theme, built once, so a tile's pixels keep their references. */
-const HOLE = [styles.pixel, styles.dead]
-const LIT: Record<string, Lit> = Object.fromEntries(
+/** Every run length a row can hold, indexed by cells. Widths, so `runWidth` runs once. */
+const WIDE = Array.from({ length: display.COLS + 1 }, (_, cells) => ({
+  width: runWidth(cells, PITCH, MARGIN),
+}))
+
+/** Every appearance a run can have: `[cls + 1][cells]`, where `HOLE` is cls -1. */
+type Skins = readonly (readonly StyleProp<ViewStyle>[])[]
+
+/** One table per theme, built once, so a tile's runs keep their references. */
+const SKINS: Record<string, Skins> = Object.fromEntries(
   THEMES.map((t) => [
     t.id,
-    [styles.pixel, ...t.levels.map((colour) => [styles.pixel, { backgroundColor: colour }])],
+    [
+      [styles.pixel, styles.dead],
+      styles.pixel,
+      ...t.levels.map((colour) => [styles.pixel, { backgroundColor: colour }]),
+    ].map((base) => WIDE.map((wide) => [base, wide])),
   ]),
 )
 
-const skin = (lit: Lit, alive: boolean, level: number) =>
-  alive ? (lit[level] ?? lit[0]) : HOLE
+const skinsFor = (theme: Theme): Skins => SKINS[theme.id] ?? SKINS[DEFAULT_THEME.id]
 
 /**
  * One small frame at panel coordinates. `glow` outlines the tile that is on now;
@@ -829,13 +849,13 @@ const Tile = memo(function Tile({
 }) {
   const theme = useTheme()
   if (frame === null) return <View style={styles.noTile} />
-  const lit = LIT[theme.id] ?? LIT[DEFAULT_THEME.id]
+  const skins = skinsFor(theme)
   return (
     <View style={[styles.panel, glow !== null && { borderColor: glow }]}>
       {ORDER.map((row) => (
         <View key={row} style={styles.pixelRow}>
-          {ALIVE[row].map((alive, col) => (
-            <View key={col} style={skin(lit, alive, frame[row]?.[col] ?? 0)} />
+          {runsOf(row, (col) => frame[row]?.[col] ?? 0).map((run, i) => (
+            <View key={i} style={skins[run.cls + 1]?.[run.cells]} />
           ))}
         </View>
       ))}
