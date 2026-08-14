@@ -7,6 +7,7 @@ __pycache__/
 apk/
 decompiled/
 native/
+patched/
 
 # HCI snoop logs and other captures: can contain other devices' traffic
 captures/
@@ -16,3 +17,6 @@ captures/
 
 .DS_Store
 firmware/
+
+# apktool / signer jars, fetched on demand by tools/patch_apk.sh
+tools/bin/
