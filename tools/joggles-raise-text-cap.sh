@@ -24,6 +24,7 @@ APK_IN=""
 DO_INSTALL=1
 LOCATE_ONLY=0
 ASSUME_YES=0
+RESTORE=0
 
 APKTOOL_VER="2.12.0"
 SIGNER_VER="1.3.0"
@@ -37,10 +38,15 @@ Usage: ./joggles-raise-text-cap.sh [options]
   --pkg NAME       package name (default com.pinkysinyeeho.funkyglassesplus)
   --locate-only    report the cap sites and stop, change nothing
   --no-install     build and sign, but do not touch the phone
+  --restore        put the untouched original back on the phone and exit
   --yes            do not prompt before uninstalling the store build
   --workdir DIR    scratch directory (default ./joggles-patch-work)
 
 Needs: a JDK (21 tested), and adb unless --apk and --no-install are both used.
+
+The APK pulled off the phone is kept untouched at <workdir>/base.apk (plus
+<workdir>/split_*.apk). It is still vendor-signed, so --restore reinstalls the
+original app exactly as it was. Keep the workdir and you can always go back.
 EOF
 }
 
@@ -52,6 +58,7 @@ while [ $# -gt 0 ]; do
     --workdir) WORK="${2:-}"; shift 2 ;;
     --locate-only) LOCATE_ONLY=1; shift ;;
     --no-install) DO_INSTALL=0; shift ;;
+    --restore) RESTORE=1; shift ;;
     --yes) ASSUME_YES=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
@@ -78,6 +85,36 @@ need_adb() {
   command -v adb >/dev/null 2>&1 || die "adb not on PATH. Install platform-tools, or use --apk FILE --no-install"
   adb get-state >/dev/null 2>&1 || die "No phone in 'device' state. Enable USB debugging and accept the prompt, then rerun."
 }
+
+# ------------------------------------------------------------------- restore
+# Putting the original back needs no JDK and no rebuild: the APK pulled off the
+# phone was never modified, and it still carries the vendor's signature, so it
+# installs as the genuine app.
+if [ "$RESTORE" -eq 1 ]; then
+  step "Restoring the original $PKG"
+  need_adb
+  [ -f "$WORK/base.apk" ] || die "No saved original at $WORK/base.apk. Nothing to restore from. Reinstall from the Play Store instead."
+  RSPLITS=$(ls "$WORK"/split_*.apk 2>/dev/null | wc -l | tr -d ' ')
+  echo "  original: $WORK/base.apk ($RSPLITS split(s))"
+  echo
+  echo "This uninstalls the patched build, which CLEARS THE APP'S DATA again."
+  if [ "$ASSUME_YES" -eq 0 ]; then
+    printf 'Restore the original app? [y/N] '
+    read -r reply
+    case "$reply" in y|Y|yes|YES) ;; *) echo "Stopped, nothing changed."; exit 0 ;; esac
+  fi
+  adb shell am force-stop "$PKG" >/dev/null 2>&1 || true
+  adb uninstall "$PKG" >/dev/null 2>&1 || echo "  (was not installed)"
+  if [ "$RSPLITS" -gt 0 ]; then
+    adb install-multiple "$WORK/base.apk" "$WORK"/split_*.apk || die "install-multiple failed. See the adb output above."
+  else
+    adb install "$WORK/base.apk" || die "install failed. See the adb output above."
+  fi
+  step "Original restored"
+  echo "The vendor build is back, signed with the vendor's own key."
+  echo "Play Store updates will work on it again."
+  exit 0
+fi
 
 step "Checking prerequisites"
 command -v java >/dev/null 2>&1 || die "No JDK on PATH. Install one (21 is tested) and rerun."
@@ -360,8 +397,17 @@ upload, since the app rasterises phone-side.
 One BLE connection at a time. The app and 'bun cli' cannot both hold the
 glasses, so close the app before running the CLI.
 
+To go back to the untouched vendor build at any time:
+  $0 --restore --pkg $PKG --workdir $WORK
+
+That reinstalls $WORK/base.apk, which was never modified and is still signed
+with the vendor's key, so Play Store updates resume working on it. Keep the
+workdir and the rollback stays available. Reinstalling from the Play Store also
+works if you delete it.
+
 Artefacts:
-  signed APK(s)   $OUTAPK/
-  decoded tree    $DEC/
-  patch to commit $PATCHFILE
+  signed APK(s)     $OUTAPK/
+  untouched original $WORK/base.apk
+  decoded tree      $DEC/
+  patch to commit   $PATCHFILE
 EOF

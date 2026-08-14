@@ -180,6 +180,13 @@ the redistribution problem the APK does.
 - Resigning changes the signature, so the patched build will not upgrade over
   the store install. Uninstall first, which clears app data. Content saved on
   the glasses themselves survives: the device store is separate from the app.
+- Going back is easy and worth knowing before starting. The APK pulled off the
+  phone is never modified and keeps the vendor's signature, so reinstalling it
+  restores the genuine app and Play Store updates resume working on it.
+  *verified* that the pull survives a full patch run byte-identical.
+  `joggles-raise-text-cap.sh --restore` does it, and the Play Store is the
+  fallback if the pulled copy is lost. Switching either way needs an uninstall,
+  because the two signatures differ, so app data is cleared each time.
 - Split installs (`base.apk` plus `split_config.*`) need every split signed with
   the same key and installed as a set (`adb install-multiple`). Patching base
   alone and installing it alone fails. *unverified* for this app: whether it is
