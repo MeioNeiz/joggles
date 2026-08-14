@@ -81,9 +81,42 @@ DEC="$WORK/decoded"
 OUTAPK="$WORK/out"
 mkdir -p "$BIN" "$OUTAPK" || die "Cannot create $WORK"
 
+# Offer to install a missing dependency rather than just failing. Installing
+# software is the user's call, so it always asks unless --yes was passed.
+offer_brew() {
+  cask="$1"; label="$2"
+  echo "  $label is not installed."
+  if ! command -v brew >/dev/null 2>&1; then
+    die "$label is missing and Homebrew is not installed.
+Install Homebrew from https://brew.sh then rerun, or install $label yourself."
+  fi
+  if [ "$ASSUME_YES" -eq 0 ]; then
+    printf '  Install it now with: brew install --cask %s ? [y/N] ' "$cask"
+    read -r reply
+    case "$reply" in y|Y|yes|YES) ;; *) die "Cannot continue without $label." ;; esac
+  fi
+  brew install --cask "$cask" || die "brew install --cask $cask failed. Install $label yourself and rerun."
+}
+
+need_java() {
+  # Not `command -v java`: macOS ships a /usr/bin/java stub that exists even with
+  # no JDK installed and only errors when run. Test that it actually runs.
+  if ! java -version >/dev/null 2>&1; then
+    offer_brew temurin "a JDK"
+    java -version >/dev/null 2>&1 || die "Java still does not run after install. Open a new terminal and rerun."
+  fi
+  java -version 2>&1 | grep -v "^Picked up" | head -1 | sed 's|^|  |'
+}
+
 need_adb() {
-  command -v adb >/dev/null 2>&1 || die "adb not on PATH. Install platform-tools, or use --apk FILE --no-install"
-  adb get-state >/dev/null 2>&1 || die "No phone in 'device' state. Enable USB debugging and accept the prompt, then rerun."
+  if ! command -v adb >/dev/null 2>&1; then
+    offer_brew android-platform-tools "adb (Android platform-tools)"
+    command -v adb >/dev/null 2>&1 || die "adb still not on PATH. Open a new terminal and rerun."
+  fi
+  adb get-state >/dev/null 2>&1 || die "No phone in 'device' state.
+On the phone: Settings > About > tap Build number 7 times, then
+Settings > System > Developer options > enable USB debugging.
+Plug it in, accept the 'Allow USB debugging?' prompt, then rerun."
 }
 
 # ------------------------------------------------------------------- restore
@@ -117,8 +150,7 @@ if [ "$RESTORE" -eq 1 ]; then
 fi
 
 step "Checking prerequisites"
-command -v java >/dev/null 2>&1 || die "No JDK on PATH. Install one (21 is tested) and rerun."
-java -version 2>&1 | grep -v "^Picked up" | head -1
+need_java
 if [ -z "$APK_IN" ] || [ "$DO_INSTALL" -eq 1 ]; then need_adb; fi
 
 step "Fetching tools"
