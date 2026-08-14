@@ -35,6 +35,7 @@
 import { COLS } from '../display.js'
 import { BAND5 } from './band5.js'
 import { BAND6 } from './band6.js'
+import { CAPS5 } from './caps5.js'
 import { measure, pieces } from './kern.js'
 import { staticText } from './place.js'
 import { SLIM5 } from './slim5.js'
@@ -48,7 +49,7 @@ import type { Font } from './types.js'
  * one that cannot move. Adding a font here is what puts it in front of a user,
  * so a half-drawn face is not in this list even when it exists.
  */
-export const FONTS: readonly Font[] = [BAND5, BAND6, SLIM5, TALL7]
+export const FONTS: readonly Font[] = [BAND5, BAND6, CAPS5, SLIM5, TALL7]
 
 /** What an item saved before any of this existed renders in. Never changes. */
 export const LEGACY_FONT: Font = BAND5

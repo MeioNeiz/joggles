@@ -65,6 +65,7 @@ import type { Font } from './fonts/types.js'
 
 export { BAND5 } from './fonts/band5.js'
 export { BAND6 } from './fonts/band6.js'
+export { CAPS5 } from './fonts/caps5.js'
 export { SLIM5 } from './fonts/slim5.js'
 export { TALL7 } from './fonts/tall7.js'
 export { staticText, widestGlyph } from './fonts/place.js'

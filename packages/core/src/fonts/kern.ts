@@ -46,17 +46,31 @@ export function leftProfile(rows: readonly string[]): Array<number | null> {
  *
  * `Infinity` when no row holds ink from both: nothing can collide, so the only
  * thing left to bound the pull is taste, which is `Font.maxTuck`.
+ *
+ * **Each row of `b` is checked against rows `r-1`, `r` and `r+1` of `a`, not just
+ * `r`.** Comparing single rows only bounds ink that would end up side by side,
+ * and lets ink that would end up *diagonally* adjacent through. On a panel of
+ * round LEDs a diagonal touch closes the gap as completely as a horizontal one,
+ * so two curved letters pulled flush read as one shape. *Found on hardware
+ * 2026-08-14 from "JACOB", where `C` and `O` joined: same-row clearance allowed a
+ * one-column tuck, which put `C`'s top-right pixel diagonal to `O`'s left stem
+ * and removed the only blank column between them.* Widening the comparison to the
+ * neighbouring rows is what makes the tuck safe rather than merely legal.
  */
 export function tuckLimit(a: readonly string[], b: readonly string[]): number {
   if (isBlank(a) || isBlank(b)) return 0
   const right = rightProfile(a)
   const left = leftProfile(b)
   let limit = Infinity
-  for (let r = 0; r < Math.min(right.length, left.length); r++) {
-    const ra = right[r]
+  for (let r = 0; r < left.length; r++) {
     const lb = left[r]
-    if (ra === null || lb === null) continue
-    limit = Math.min(limit, ra + lb)
+    if (lb === null) continue
+    for (const rr of [r - 1, r, r + 1]) {
+      if (rr < 0 || rr >= right.length) continue
+      const ra = right[rr]
+      if (ra === null) continue
+      limit = Math.min(limit, ra + lb)
+    }
   }
   return limit
 }

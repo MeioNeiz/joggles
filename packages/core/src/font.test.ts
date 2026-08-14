@@ -134,6 +134,28 @@ test('no kerned pair puts two glyphs closer than the base spacing', () => {
             `${f.name} "${a}${b}" row ${t} clear ${Math.max(clear, f.spacing)}`,
           )
         }
+        // And the same for ink one row apart. Checking rows independently passes a
+        // pair whose ink ends up diagonally adjacent, which on round LEDs closes
+        // the gap just as completely: "JACOB" read as JAC0B with C and O fused,
+        // and every per-row assertion above was satisfied while it did.
+        for (let t = 0; t + 1 < f.height; t++) {
+          const upper = inkAt(list[0], xs[0], t)
+          const lower = inkAt(list[1], xs[1], t + 1)
+          if (upper.length && lower.length) {
+            const clear = Math.min(...lower) - Math.max(...upper) - 1
+            expect(`${f.name} "${a}${b}" rows ${t}/${t + 1} clear ${clear}`).toBe(
+              `${f.name} "${a}${b}" rows ${t}/${t + 1} clear ${Math.max(clear, 0)}`,
+            )
+          }
+          const above = inkAt(list[1], xs[1], t)
+          const below = inkAt(list[0], xs[0], t + 1)
+          if (above.length && below.length) {
+            const clear = Math.min(...above) - Math.max(...below) - 1
+            expect(`${f.name} "${a}${b}" rows ${t + 1}/${t} clear ${clear}`).toBe(
+              `${f.name} "${a}${b}" rows ${t + 1}/${t} clear ${Math.max(clear, 0)}`,
+            )
+          }
+        }
       }
     }
   }
@@ -363,13 +385,21 @@ test('no two letters or digits in the default face are within one pixel', () => 
 // band5 was resting on band5 happening to be the default. It broke the moment the
 // default moved to band6, correctly: the numbers below are band5's, and now the
 // test asks band5 for them.
+// Three of these grew by one to four columns on 2026-08-14, and that was a
+// deliberate re-pricing rather than a drift: `kern.tuckLimit` now refuses a tuck
+// that would leave two glyphs diagonally adjacent, which is what made `C` and `O`
+// join in "JACOB" on the panel. 'Hello there' 37->38, 'FUNKY GLASSES' 49->50,
+// 'GLASSES-125B37' 51->55. Across a 35-message corpus one message crossed the
+// free-or-flash line in this face, "LOOK UP" at 24->25, so a saved item sitting
+// exactly on 24 columns can now cost five page erases where it used to be free.
+// That is the price of the fix and it is written down here rather than discovered.
 test('band5 measures what it has always measured', () => {
   const frozen: Array<[string, number]> = [
     ['JOGGLE', 23],
     ['JOGGLES', 27],
-    ['Hello there', 37],
-    ['FUNKY GLASSES', 49],
-    ['GLASSES-125B37', 51],
+    ['Hello there', 38],
+    ['FUNKY GLASSES', 50],
+    ['GLASSES-125B37', 55],
     ['F', 3],
   ]
   for (const [s, want] of frozen) {
