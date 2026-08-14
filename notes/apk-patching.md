@@ -103,6 +103,20 @@ smali.
 `tools/raise_text_cap.sh <pkg>` reports candidate sites and changes nothing.
 `--apply [newcap]` rewrites the high-confidence ones, default 200.
 
+`tools/joggles-raise-text-cap.sh` does the whole thing in one command: pull,
+decode, locate, patch, rebuild, resign, install. It is deliberately
+self-contained, duplicating the other two scripts, so it can be downloaded on
+its own and run on a machine with no clone of this repo. It fetches its own
+apktool and signer, handles split installs by resigning every split with the
+same key, prompts before the uninstall that clears app data, and writes a
+committable patch beside its output. `--locate-only` and `--no-install` make it
+safe to run before committing to anything.
+
+Being standalone, it needs the macOS toolchain rather than the GNU one: BSD sed
+does not expand `\t` in a regex, BSD awk does not take `delete arr` for a whole
+array, and macOS bash is 3.2, where an empty array under `set -u` is a hazard.
+It uses a literal tab, `split("", arr)`, and a plain counter instead.
+
 The viability question is already settled, so this does not need a hardware check
 first. `research/vendor-app-protocol.md` records "Text input: 40 half-width units,
 an app-side UI cap" and "the 40-character cap is a UI limit rather than a protocol
