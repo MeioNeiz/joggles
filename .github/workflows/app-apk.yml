@@ -10,6 +10,14 @@ name: app apk
 on:
   push:
     branches: [claude/app-apk-release]
+    # A prose change cannot alter the APK, and the build is seven minutes of a
+    # runner. Anything that can change the app is outside these paths, so a code
+    # push still builds. To force one after a docs-only change, push any code file
+    # or re-run the last build from the Actions tab.
+    paths-ignore:
+      - '**/*.md'
+      - 'notes/**'
+      - 'research/**'
   workflow_dispatch:
     inputs:
       publish:

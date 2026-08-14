@@ -13,6 +13,7 @@ LED glasses, app Funky Glasses+. Protocol solved, verified on hardware.
 | `notes/playlist.md` | the cycled playlist: why stock's button cannot do it, the one-reel design, and the residency defect |
 | `notes/library.md` | the phone's saved content: the three things called "the library" kept apart, store-the-recipe, why width is not a question, and what the four faces are for |
 | `notes/firmware-design.md` | our own firmware: architecture, wire formats, roadmap, safety envelope |
+| `notes/from-a-phone.md` | **changing this project with no Mac and no cable**: the CI-builds-the-APK route, what a cloud container cannot reach (no SDK, no adb, no Bluetooth), the rendering bug that route let through, and what still needs somebody holding the glasses |
 | `research/README.md` | index of the teardown. `firmware-internals.md` is what the firmware actually is, tiered by trust in its Provenance section |
 
 Findings go in `research/` with a confidence marker, judgement in `notes/`. **How to
