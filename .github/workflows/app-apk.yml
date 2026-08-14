@@ -1,0 +1,117 @@
+# Build the Android APK and attach it to a prerelease, so the app can be installed
+# from a phone by tapping a link. No Mac and no cable involved.
+#
+# This runs the same `bun run apk` a human runs locally: the build logic stays in
+# packages/app/scripts/release-apk.sh, and this file only supplies a machine with a
+# JDK, a Node, a Bun and the Android SDK. Duplicating the Gradle invocation here
+# would let CI and the local build drift apart.
+name: app apk
+
+on:
+  push:
+    branches: [claude/app-apk-release]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Attach the APK to a prerelease as well as to the run artifacts
+        type: boolean
+        default: true
+
+# Needed to create the prerelease and upload the APK to it.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # react-native 0.86 wants a JDK 17 toolchain. The runner ships several; pin one
+      # rather than inheriting whatever the image defaults to this month.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Bun is the package manager for this workspace and is not on the runner image.
+      - name: Install bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      - name: Install dependencies
+        run: bun install
+
+      # Cheap, and it fails in seconds rather than after a 20 minute Gradle build if
+      # something in core or the font tables is broken.
+      #
+      # research/tools is excluded, unlike the root `bun test` script: those suites read
+      # images under firmware/, which is gitignored, so they are absent from any clean
+      # checkout. `describe.if(existsSync(STOCK))` does not save them, because bun still
+      # evaluates the describe body, and the readFileSync at the top of it throws during
+      # collection. That makes `bun test` exit 1 on a fresh clone, here and on any new
+      # machine. Left as a finding rather than refactored around from this branch.
+      - name: Test
+        run: bun test packages/core packages/app/src
+
+      - name: Show the toolchain the build will use
+        run: |
+          source packages/app/scripts/android-env.sh
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          java -version
+          ls "$ANDROID_HOME" || true
+
+      - name: Build the APK
+        run: bun run apk
+
+      - name: Name the artefact
+        id: apk
+        run: |
+          file=$(ls packages/app/dist/*.apk | head -1)
+          version=$(node -p "require('./packages/app/app.json').expo.version")
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          ls -lh "$file"
+
+      # Always uploaded, so a failed or skipped release step still leaves the APK
+      # somewhere reachable.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: joggles-apk
+          path: packages/app/dist/*.apk
+          if-no-files-found: error
+
+      # A release asset, unlike a run artifact, is a plain URL a phone browser can
+      # download without being signed in to GitHub. Marked prerelease: these are
+      # builds off a working branch, not a blessed version. --clobber so re-running
+      # replaces the asset instead of failing on a tag that already exists.
+      - name: Attach to a prerelease
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="app-v${{ steps.apk.outputs.version }}-build${{ github.run_number }}"
+          gh release create "$tag" \
+            --title "Joggles app ${{ steps.apk.outputs.version }} (build ${{ github.run_number }})" \
+            --notes "Android APK built from \`${{ github.ref_name }}\` at \`${{ github.sha }}\`.
+
+          Includes the font library: band5, band6, slim5 and tall7, selectable per
+          message on the Create > Message screen.
+
+          Install: open this page on the phone, download the .apk, tap it, and allow
+          installs from your browser if asked. Signed with the repo's shared debug
+          key, so it upgrades over any earlier build from this repo." \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            || echo "release $tag exists, uploading to it"
+          gh release upload "$tag" "${{ steps.apk.outputs.file }}" --clobber
+
+          echo "### APK ready" >> "$GITHUB_STEP_SUMMARY"
+          gh release view "$tag" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
