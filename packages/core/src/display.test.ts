@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { COLS, Grid, ROWS, alive, edgePixels } from './display.js'
 import { textBitmap, textWidth } from './font.js'
+import { BAND5 } from './fonts/band5.js'
 
 test('pixels use the vendor two-bit value 0b11 at stride 2', () => {
   const g = new Grid()
@@ -40,9 +41,14 @@ test('delta only reports changed columns', () => {
   expect(b.deltaFrames(null).length).toBe(COLS)
 })
 
+// band5 is named rather than left to the default. These numbers are band5's
+// 3-wide, 5-row F, and what the test is for is that measuring and rendering agree
+// and that the rows come back bottom first. Read through the bare API it also
+// asserted which face is default, so it failed when that moved to band6 even
+// though nothing it describes had changed.
 test('font renders and measures consistently', () => {
-  expect(textWidth('F')).toBe(3)
-  const bm = textBitmap('F')
+  expect(textWidth('F', { font: BAND5 })).toBe(3)
+  const bm = textBitmap('F', { font: BAND5 })
   expect(bm.length).toBe(5)
   // Bottom row first, so the F's stem is set and its top bar is on the last row.
   expect(bm[0]).toEqual([1, 0, 0])

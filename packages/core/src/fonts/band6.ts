@@ -23,8 +23,16 @@
  * what tells a screen where that boundary has moved to.
  *
  * That is the entire difference between the two faces and it is a choice, not a
- * fix. Neither is the successor of the other, and `band5` stays `DEFAULT_FONT`
- * because every text item ever saved renders through whatever that is.
+ * fix. Neither is the successor of the other.
+ *
+ * **This is `DEFAULT_FONT` since 2026-08-14.** *Corrected: this said `band5`
+ * stays the default "because every text item ever saved renders through whatever
+ * that is". That reason was wrong. Stored items with no face recorded are read
+ * through `LEGACY_FONT`, which is pinned to `band5` independently of the default,
+ * so moving the default moves only what a new message starts as.* The measured
+ * case for moving it: across letters and digits `band5` has ten pairs one pixel
+ * apart and `slim5` fifteen, while this face has none, and one pixel is a coin
+ * toss on a panel that is scrolling. `font.test.ts` asserts that of the default.
  *
  * Proportions: cap height 6, ascender 6, x-height 4, no descenders. The
  * descender row would be panel row 1, which is the notch, so g j p q y sit
@@ -61,7 +69,11 @@ const GLYPHS: Record<string, string[]> = {
   Y: ['#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..'],
   Z: ['####', '...#', '..#.', '.#..', '#...', '####'],
 
-  a: ['....', '....', '.##.', '#..#', '#..#', '.###'],
+  // Flat top, not a round one. A bowl shaped `.##.` left `a` one pixel from `o`,
+  // its bottom-right corner, which is a coin toss on a moving panel. Squaring the
+  // top puts three pixels between them and is the usual way a single-storey `a`
+  // is drawn this small.
+  a: ['....', '....', '####', '#..#', '#..#', '.###'],
   b: ['#...', '#...', '###.', '#..#', '#..#', '###.'],
   c: ['....', '....', '.###', '#...', '#...', '.###'],
   d: ['...#', '...#', '.###', '#..#', '#..#', '.###'],
