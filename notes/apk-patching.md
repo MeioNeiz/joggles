@@ -98,6 +98,49 @@ uber-apk-signer emits alongside was orphaned under the old name; and `decode` di
 `rm -rf` on an existing tree without asking, which would discard hand-edited
 smali.
 
+## Raising the 40-character text cap
+
+`tools/raise_text_cap.sh <pkg>` reports candidate sites and changes nothing.
+`--apply [newcap]` rewrites the high-confidence ones, default 200.
+
+The viability question is already settled, so this does not need a hardware check
+first. `research/vendor-app-protocol.md` records "Text input: 40 half-width units,
+an app-side UI cap" and "the 40-character cap is a UI limit rather than a protocol
+or firmware one", both *verified*, against a device that scrolls ~200 uploaded
+columns unattended.
+
+40 is `const/16 <reg>, 0x28` in smali, because `const/4` tops out at 7. Anything
+up to 32767 also fits `const/16`, so raising it keeps the instruction width and
+moves no registers. The script searches three ways:
+
+- **A**, `android:maxLength="40"` in `res/`. The cheapest form, no smali needed.
+- **B**, a `const/16` of `0x28` that loads the argument register of an
+  `InputFilter$LengthFilter;-><init>(I)V`. Rewritten in place, anchored to that
+  one line number.
+- **C**, other `0x28` constants in classes named for text input. Reported as
+  leads and never auto-changed, because the cap may be a plain length comparison
+  or a half-width counting loop rather than a filter. CJK counting as 2 means
+  such a loop almost certainly exists somewhere.
+
+*verified* mechanically against KeePassDX with both forms planted, including a
+decoy `0x28` in the same method: the decoy survived, the real site became `0xc8`,
+and both changes round-tripped out of the rebuilt signed APK. *unverified* on the
+vendor app, which has never been available in this sandbox.
+
+A wider field is not the same as a wider upload. The app rasterises phone-side,
+so if it still truncates at 40 after patching, the cap is enforced in more than
+one place and section C is where to look next.
+
+### Corrections: two ways the locator was wrong
+
+1. **Proximity matching flags the wrong constant.** The first version accepted any
+   `const/16 0x28` within eight lines of a `LengthFilter`, which matched an
+   unrelated constant sitting above it, and `sed` would then have rewritten that.
+   Bind the constant's register to the filter's `<init>` argument register instead.
+2. **`NR` is cumulative under `find -exec awk {} +`.** One awk process sees many
+   files and `NR` keeps counting across them, so the reported line numbers pointed
+   into the wrong file entirely. Use `FNR`.
+
 ## Patch format
 
 Headers are normalised to `a/` and `b/` with the mtimes stripped, so
