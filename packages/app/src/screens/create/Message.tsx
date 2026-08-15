@@ -23,7 +23,7 @@ import { library } from '../../library-store.js'
 import type { Showable, Tap, TapContext, TapResult } from '../../one-tap.js'
 import { Preview } from '../../Preview.js'
 import { settings } from '../../settings-store.js'
-import { PRESETS, msPerColumn } from '../../speed.js'
+import { PRESETS, describe as describeSpeed, msPerColumn, sameStep } from '../../speed.js'
 import { Chip, ChipRow, Fine, FlashButton, FreeButton, INK, Link, StatusLine } from '../../ui.js'
 import { useTapFlow } from '../tap-flow.js'
 
@@ -150,16 +150,22 @@ export function Message({
       ) : null}
 
       {!fits && columns !== null && columns > 0 ? (
-        <ChipRow label="Speed">
-          {PRESETS.map((s) => (
-            <Chip
-              key={s.value}
-              on={speed === s.value}
-              onPress={() => setSpeed(s.value)}
-              label={s.label}
-            />
-          ))}
-        </ChipRow>
+        <>
+          {/* Ten rungs, one per firmware bucket, so nothing the panel can do is out of
+              reach. The caption carries the rate because the top rung is the hardware
+              ceiling and a row of numbers alone would invite hunting for an eleventh. */}
+          <ChipRow label="Speed">
+            {PRESETS.map((s) => (
+              <Chip
+                key={s.value}
+                on={sameStep(speed, s.value)}
+                onPress={() => setSpeed(s.value)}
+                label={s.label}
+              />
+            ))}
+          </ChipRow>
+          <Fine>{describeSpeed(speed)}</Fine>
+        </>
       ) : null}
 
       <View style={styles.actions}>

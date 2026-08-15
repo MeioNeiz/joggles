@@ -28,7 +28,7 @@ import { library } from '../../library-store.js'
 import type { Showable, Tap, TapContext, TapResult } from '../../one-tap.js'
 import { Preview } from '../../Preview.js'
 import { settings } from '../../settings-store.js'
-import { PRESETS, msPerColumn } from '../../speed.js'
+import { PRESETS, describe as describeSpeed, msPerColumn, sameStep } from '../../speed.js'
 import { Chip, ChipRow, Bad, Fine, FlashButton, FreeButton, Link, StatusLine } from '../../ui.js'
 import { useTapFlow } from '../tap-flow.js'
 
@@ -141,11 +141,21 @@ export function Effect({
       </ChipRow>
 
       {!still ? (
-        <ChipRow label="Speed">
-          {PRESETS.map((s) => (
-            <Chip key={s.value} on={speed === s.value} onPress={() => setSpeed(s.value)} label={s.label} />
-          ))}
-        </ChipRow>
+        <>
+          {/* One chip per firmware bucket. `sameStep` rather than equality, so a loop
+              saved at a speed that is not one of the ten still lights its own rung. */}
+          <ChipRow label="Speed">
+            {PRESETS.map((s) => (
+              <Chip
+                key={s.value}
+                on={sameStep(speed, s.value)}
+                onPress={() => setSpeed(s.value)}
+                label={s.label}
+              />
+            ))}
+          </ChipRow>
+          <Fine>{describeSpeed(speed)}</Fine>
+        </>
       ) : null}
 
       <Fine>

@@ -155,6 +155,55 @@ export const msPerColumn = (v: number): number => speedDivisor(v) * SPEED_TICK_M
 /** The same as a rate, which is the number worth showing a person. */
 export const columnsPerSecond = (v: number): number => 1000 / msPerColumn(v)
 
+// --- The ceiling, and every rung below it ---
+//
+// **`SPEED` saturates. 12.5 columns per second is the fastest this panel scrolls and
+// no argument goes past it.** The ladder's last comparison is against 90, so 91, 100
+// and 255 all fall through to divisor 4 and write the same byte to `0x2000266e`.
+// Asking for "faster" over BLE is asking for a number the firmware has already
+// stopped reading. *derived*, from the disassembly at `abs 0x183da`; `bun cli speed`
+// is the hardware check, including whether an argument above 100 does something the
+// ladder does not predict.
+//
+// The one lever that would move the ceiling is not in this protocol at all: the 50 Hz
+// animation tick is one byte at `abs 0x18052`, and doubling it doubles the whole
+// range. That is a firmware patch, it needs SWD delivery, and both are blocked - see
+// `notes/plan-after-the-brick.md`. Nothing here can substitute for it, so a UI should
+// say where the top is rather than imply there is more above it.
+
+/** The largest argument worth sending. Everything above behaves identically. */
+export const SPEED_ARG_MAX = 100
+
+/**
+ * The smallest argument that reaches the fastest bucket, i.e. the top of the ladder.
+ *
+ * Derived from the ladder rather than written as 91, so a corrected threshold moves
+ * this with it.
+ */
+export const SPEED_FASTEST_ARG = SPEED_LADDER[SPEED_LADDER.length - 1][0] + 1
+
+/**
+ * One argument per distinct divisor, slowest first: every speed the device HAS.
+ *
+ * Ten rungs, because there are ten buckets. A control offering fewer leaves speeds
+ * the hardware supports unreachable, and one offering more repeats itself.
+ *
+ * Each value sits in the MIDDLE of its bucket rather than on a boundary. The
+ * boundaries are the fragile part of the transcription - they are `bhi` comparisons,
+ * so being off by one moves a rung into its neighbour - and a midpoint absorbs that
+ * error where 10 or 11 would not.
+ */
+export const SPEED_STEPS: readonly number[] = (() => {
+  const steps: number[] = []
+  let low = 0
+  for (const [atMost] of SPEED_LADDER) {
+    steps.push(Math.floor((low + atMost) / 2))
+    low = atMost + 1
+  }
+  steps.push(Math.floor((SPEED_FASTEST_ARG + SPEED_ARG_MAX) / 2))
+  return steps
+})()
+
 /**
  * Bank index.
  *

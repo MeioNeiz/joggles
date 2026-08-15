@@ -92,7 +92,7 @@ device's, so it is a decoding aid rather than a menu.
 | `LIGHT n` | `06 LIGHT n` | brightness, and it floors at level 1 |
 | `LEDON` / `LEDOFF` † | `05` / `06` | panel on/off; **`CLRL` is the only way dark** |
 | `LIGHTON` / `LIGHTOFF` † | `07` / `08` | flashlight |
-| `SPEED n` | `06 SPEED n` | animation speed |
+| `SPEED n` | `06 SPEED n` | scroll rate, and it **saturates at 91**. See below |
 | `EVERT` † | `05 EVERT` | invert display |
 | `ANIM n` | `05 ANIM n` | built-in animation |
 | `LOOA` † | `04 LOOA` | loop animations; the firmware matches **`LOOP`** |
@@ -137,6 +137,48 @@ three are the only notifications the app parses, and all belong to `DATS`.
 Which of these the app actually emits, and which are library dead code, is listed
 in `research/vendor-app-protocol.md`. Dead in the app does not mean absent from the
 firmware: `SMVEW 02` is dead in the app and works on our unit.
+
+## How fast the panel scrolls, and why there is no faster
+
+**12.5 columns per second is the ceiling, and `SPEED 91` already reaches it.** *derived*
+from the ladder at `abs 0x183da`, disassembled by hand; `bun cli speed` is the hardware
+check and has not been run yet.
+
+`SPEED n` does not set a rate. It buckets `n` and writes a frame divisor to
+`0x2000266e`, and the scroll advances one column every `divisor` ticks of the 50 Hz
+animation clock. Ten buckets, and the last comparison is against 90:
+
+| `n` | Divisor | ms per column | Columns per second |
+| --- | --- | --- | --- |
+| 0-10 | 13 | 260 | 3.8 |
+| 11-20 | 12 | 240 | 4.2 |
+| ... one bucket per ten ... | | | |
+| 81-90 | 5 | 100 | 10.0 |
+| **91 and above** | **4** | **80** | **12.5** |
+
+So `SPEED 91`, `SPEED 100` and `SPEED 255` are one speed with three names. **A control
+that offers "faster" past 91 is offering a number the firmware has stopped reading**,
+and that is the trap this section exists for: the value looks like a rate, so it looks
+like it should keep going.
+
+Three things that are *not* the way round it:
+
+- **Streaming the scroll live is slower, not faster.** A scroll step redraws the
+  window, up to 24 column writes at `PACING_MS` = 10 ms, so about 4 columns per second
+  against the device's 12.5. The device wins because it scrolls out of its own flash.
+- **`SPEED` does not touch the built-in banks.** `ANIM` content advances every 6 ticks
+  regardless (`abs 0x20bf2`), a fixed 8.3 fps.
+- **A narrower font is not a faster scroll.** It puts more message inside the same 12.5
+  columns per second, which is worth having and is a different lever.
+
+The one thing that would move the ceiling is a **firmware patch**: the 50 Hz tick is one
+byte at `abs 0x18052` (`0x32` to `0x64`), and doubling it doubles the whole range. It
+also halves every timeout measured in ticks, including the 2 s power-off. It needs SWD
+delivery, which is blocked - `notes/plan-after-the-brick.md`.
+
+`packages/core/src/protocol.ts` carries the ladder, `SPEED_STEPS` (one argument per
+bucket, mid-bucket so a boundary error cannot move a rung) and `SPEED_FASTEST_ARG`.
+The phone's speed control is generated from them.
 
 ## Panel geometry - confirmed on hardware
 
@@ -482,6 +524,12 @@ Answered since the last pass:
 
 Still open:
 
+- [ ] **The `SPEED` ceiling on hardware.** Ten buckets and saturation at 91 are
+      *derived* from the ladder at `abs 0x183da` and the whole phone speed control is
+      built on them. `bun cli speed` steps every bucket and then past the top, on one
+      flash write. Two answers wanted: were all ten rungs visibly different and in
+      order, and did anything above 90 differ from 95. A value above 127 coming out
+      *slower* would mean the firmware compare is signed
 - [ ] Bit order within the 3-byte column: MSB-first assumed, *unverified*
 - [ ] What varied when `MODE 01 <n>` was cycled n=0..7 on our unit and appeared to give
       eight displays. The second byte is boolean, so it was something else
