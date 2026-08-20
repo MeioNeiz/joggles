@@ -555,6 +555,7 @@ Ranked by what it costs when you get it wrong. The first is a dead unit.
 
 `GLASSES-12C3EF` was bricked on 2026-08-08 by an OTA commit of the **stock image over
 stock**, which the device's own CRC verified before it reset itself and never came back.
+**It was repaired on 2026-08-20** over SWD: `research/aprom-write-2026-08-20.md`.
 The payload cannot have been at fault. The handoff into LDROM is. Full postmortem:
 `research/brick-2026-08-08.md`.
 
@@ -672,7 +673,8 @@ until someone has thought about the rate limit.
 
 ### 8. Test against unit 2 only, and know what unit 2 is
 
-Unit 2 is the only working pair. `notes/plan-after-the-brick.md` sets the rules: no OTA
+*Corrected 2026-08-20: unit 2 was the only working pair; unit 1 was repaired and there
+are now three.* `notes/plan-after-the-brick.md` sets the rules: no OTA
 commit ever, and it is the control for the SWD work. An app that cannot reach `fd00` is
 automatically compliant, which is the whole argument for layer 1.
 

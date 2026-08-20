@@ -7,6 +7,15 @@ comes from `research/firmware-internals.md` or `research/firmware-flashing.md` a
 carries that file's confidence marker, repeated here. No new hardware fact is established
 by this document.
 
+***Superseded 2026-08-20, and the numbers below are the APK build's.*** The hook is
+**four bytes** now, not 28, and the extension is 980 bytes on a real unit's image rather
+than 88 on the APK's. Both changed because the APK build is not the build any unit here
+runs: `research/donor-dispatcher-2026-08-20.md` for the hook, `notes/patch-over-bt.md`
+for what the extra 900 bytes are. Everything in "The hook itself" below describes the
+28-byte `LOOP`-block design, which is **not what ships**; it is kept because the
+reasoning that killed it is the reason the rule about scanning for branches exists. Read
+the two documents above first.
+
 **What v1 turned out to be:** 88 bytes appended at `abs 0x26a24`, 28 bytes replacing the
 `LOOP` dispatcher arm, 16 bytes of AES key and 8 bytes of advert name. That is 52 bytes
 written over the vendor's code, of which **48 actually differ** from stock: 27 of the 28
@@ -256,12 +265,21 @@ and a length. *verified.* We reuse that sender for one extensible outbound frame
 replies (a `DATSOK` frame starts with `0x44`); a high byte such as `0xF0` is safe.
 Message types, additive:
 
-| type | Meaning | Payload |
-| --- | --- | --- |
-| `0x00` | HELLO reply | version, capability bitmap, unit id (above) |
-| `0x01` | button event | edge (press / long / release) + free-running timer count |
-| `0x02` | battery | millivolts or level, the value already sits at `0x20003734` |
-| `0x03` | sync status | phase / tempo, for multi-pair diagnostics |
+**These numbers are superseded. `packages/core/src/jgx.ts`'s `MSG` is the wire.** The
+table below is the original design and the numbering it proposed did not survive: `0x01`
+became `UPD_REPLY` when the updater was built, and that half is **resident**, so it cannot
+be renumbered by any slot. *Corrected 2026-08-20, after track 61 built the real table and
+track 62 found this note still contradicting it.*
+
+| type | Meaning | As designed | **As built** |
+| --- | --- | --- | --- |
+| HELLO reply | version, capability bitmap | `0x00` | `0x00` |
+| answer to any `UPD_*` | not foreseen here at all | - | **`0x01`, resident** |
+| button event | edge + free-running timer count | `0x01` | **`0x02`** |
+| answer to a setting | not foreseen here at all | - | **`0x03`** |
+| battery | millivolts, the value already sits at `0x20003734` | `0x02` | **`0x04`** |
+| tick rate | not foreseen here at all | - | **`0x05`** |
+| sync status | phase / tempo, for multi-pair diagnostics | `0x03` | not built |
 
 The button event carries the **timer count at the press edge**, not just "a press
 happened", so the host computes tap-tempo intervals from device timestamps and never eats
@@ -446,7 +464,7 @@ inherits v2's dependency: the button addresses are hand-decoded and unwitnessed.
 
 | Failure | Cost | Recovery |
 | --- | --- | --- |
-| **Commit (OTA ctrl `03`) hands control to an unverified bootloader. This is the one that happened, 2026-08-08** | the unit. `GLASSES-12C3EF` staged cleanly, its own CRC matched, it reset itself and never came back, so the fault is the handoff into LDROM rather than the image | **none over the air.** The whole persistent change is `CONFIG0 = 0xFFFFFF3F`, and the repair is one erase of the config page at `0x00300000` over SWD: `research/brick-2026-08-08.md`. Until LDROM has been dumped, do not send ctrl `03` to anything; `bun run flash stage` is safe and was run on that same unit with no harm |
+| **Commit (OTA ctrl `03`) hands control to an unverified bootloader. This is the one that happened, 2026-08-08** | the unit. `GLASSES-12C3EF` staged cleanly, its own CRC matched, it reset itself and never came back, so the fault is the handoff into LDROM rather than the image | **none over the air, but SWD recovers it.** *Corrected 2026-08-20: this said the whole persistent change was `CONFIG0 = 0xFFFFFF3F` and the repair was one erase of the config page. Both were wrong.* `CONFIG0` was never the fault; the bootloader installed the **wrong application**, one whose registrar fills 22 of 26 callback slots. The repair is to write a working unit's application region over SWD, which was done on 2026-08-20 and brought the unit back: `research/aprom-write-2026-08-20.md`. Still do not send ctrl `03` to anything; `bun run flash stage` is safe and was run on that same unit with no harm |
 | Aborted or corrupt transfer | none, nothing committed | staging bank is scratch; reconnect, retry |
 | Valid image that boots but breaks BLE | high, no OTA service to re-flash through | prevented by patching in place, never relinking; caught by `ota.check` boot-vector checks |
 | Image erases bootloader (>83,968 B) | unrecoverable without SWD | prevented by the 76,800 B ceiling in `patch.ts`, which refuses to emit past it |
@@ -512,7 +530,7 @@ and the two live gates were lost in it.
 | Gate | Blocks | What settles it | Confidence today |
 | --- | --- | --- | --- |
 | **Mode table reach** | anything adding a display mode | **open.** Both `MODE` dispatch tables are byte offsets with a 510-byte reach, so a mode entry cannot address free flash either. Same trampoline problem as the dispatcher, different table, and no `LOOP`-shaped block to spend on it | *verified* |
-| **Crystal vs RC tick** | v3 sync cadence | **open, and the obvious test cannot be run.** Starting two pairs together and timing the divergence needs two working pairs and we have one: unit 1 was bricked on 2026-08-08 and its repair sits behind the SWD probe, so this is not the five-minute test three other documents used to call it. Two discriminators do not need a second unit: **read the clock init** behind the `SystemCoreClock` global at `abs 0x171a4` (`research/firmware-internals.md`, "Unverified"), which settles it offline at *derived* confidence, or **time one pair against a host clock** over ten minutes, where RC error of 1 to 2% shows up as seconds and crystal error as milliseconds. Pair-to-pair skew is at most twice one unit's error, so one unit bounds it | *unverified* |
+| **Crystal vs RC tick** | v3 sync cadence | **open, and the obvious test CAN now be run.** *Corrected 2026-08-20: this said the test needed two working pairs and we had one. Unit 1 was repaired on 2026-08-20, so there are three.* Starting two pairs together and timing the divergence is available again. Two discriminators do not need a second unit: **read the clock init** behind the `SystemCoreClock` global at `abs 0x171a4` (`research/firmware-internals.md`, "Unverified"), which settles it offline at *derived* confidence, or **time one pair against a host clock** over ten minutes, where RC error of 1 to 2% shows up as seconds and crystal error as milliseconds. Pair-to-pair skew is at most twice one unit's error, so one unit bounds it | *unverified* |
 | ~~Opcode frame offset~~ | - | discharged, see "The hook itself", the frame-offset caveat | *verified* |
 | ~~Notify sender safe outside DATS~~ | - | discharged, with three constraints on the frame: see "The back-channel: structured notify" | *verified* |
 | ~~Key buffer covers both RX and TX~~ | - | discharged by uniqueness, plus the S-box hazard: see "Identity, the crew key, and the rename" | *verified* |

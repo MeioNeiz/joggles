@@ -1,8 +1,17 @@
 # Plan after the brick: the firmware-delivery plan
 
-**Situation, as of 2026-08-11:** unit 1 (`GLASSES-12C3EF`) is bricked by an OTA commit.
-The probe is ordered and **has not landed. No SWD session has been attempted, and no
-recovery tried.** Unit 2 works, is stock, and is the only working pair.
+**Situation, as of 2026-08-20: the brick is over.** Unit 1 (`GLASSES-12C3EF`) was
+**repaired on 2026-08-20** by writing a healthy pair's application region onto it over
+SWD, 150 pages, `0x16800`-`0x293ff`. It advertises, connects and answers as stock.
+**All three pairs work.** The run: `research/aprom-write-2026-08-20.md`.
+
+The cause was the image, not the config: the vendor APK's application fills 22 of 26
+callback slots and the app tail-calls through an uninitialised RAM pointer at
+`0x20000074`. `CONFIG0` was never implicated and the config repair run first did nothing.
+
+*Corrected 2026-08-20: this said unit 1 "is bricked" and that unit 2 was "the only
+working pair". Neither is true. Earlier corrections in this same paragraph tracked the
+probe landing and the first flash write; this one closes it out.*
 **Governing idea:** the brick blocks *delivery* of firmware, not the building of anything
 else. Almost all the remaining work never needed firmware in the first place.
 **Incident, mechanism and recovery plan:** `research/brick-2026-08-08.md`. **Pads, probes
@@ -12,17 +21,24 @@ and the physical side:** `research/hardware-access.md`.
 
 | Track | Needs | State |
 | --- | --- | --- |
-| **A. Client, renderer, app** | a working pair over BLE | **unblocked.** Unit 2 does all of it. Current state is the board in `notes/parallel-tracks.md`, which is where tracks are claimed and closed |
-| **B. SWD bring-up** | the probe | waiting on delivery |
-| **C. Custom firmware on a device** | B | built and tested, no delivery route |
+| **A. Client, renderer, app** | a working pair over BLE | **unblocked, and now with three pairs rather than one.** Current state is the board in `notes/parallel-tracks.md`, which is where tracks are claimed and closed |
+| **B. SWD bring-up** | the probe | **DONE, and it repaired a unit.** Port alive, 256 KB dumped, LDROM read (track 48), the config page written, and on 2026-08-20 the **whole application region erased and programmed**: `APUEN`, both write opcodes against APROM, 512-byte granularity and "a flashed unit boots" all *verified* on silicon |
+| **C. Custom firmware on a device** | a rebased image | **the only track left.** The delivery route is proven; what is missing is an image that is safe to send. `joggles-v1.bin` is built on the APK application and is barred from every unit |
 
-Track C is worth being precise about: **it is not stalled work, it is finished work
-without a courier.** `firmware/joggles-v1.bin` builds reproducibly, and the hook and the
-extension have been disassembled out of the built image and verified instruction by
-instruction. What is missing is a way to put it on a device, and SWD is a better one than
-OTA ever was: the argument, with the constraint table, is
-`research/brick-2026-08-08.md`, "SWD is not just the repair, it is the better flashing
-route".
+Track C is worth being precise about, and **what it needs has now changed twice**. It was
+described here as "finished work without a courier", missing only a delivery route.
+*Corrected 2026-08-19: the delivery route exists and the image is the problem. Confirmed
+2026-08-20: the route is not merely available, it has carried 150 pages onto a unit and
+brought it back, so the image is the only thing standing between us and Track C.*
+`firmware/joggles-v1.bin` builds reproducibly and its hook and extension are verified
+instruction by instruction, but it is built on the vendor APK's application image and
+**no pair here runs that image**, so it must not be flashed to any unit. What Track C
+needs is not a courier, it is **a rebase onto a real unit's firmware**: see
+`research/hardfault-0xd38-2026-08-19.md` and CLAUDE.md, "Our firmware".
+
+SWD is still the better route than OTA ever was, and that argument is unaffected: the
+constraint table is `research/brick-2026-08-08.md`, "SWD is not just the repair, it is
+the better flashing route".
 
 So the sequencing is: **A now, B on delivery, C once B works.** A and B do not compete;
 they use different units.
@@ -36,7 +52,11 @@ they use different units.
   unit 1 with no harm. Staging commits nothing.
 - **Dump it over SWD before it is ever put at risk.** A pristine 256 KB image of a
   working unit is the insurance that was missing this time. With it, a future mistake is
-  an inconvenience rather than a loss.
+  an inconvenience rather than a loss. **It doubles as the reference for the unit-1 diff**
+  (`research/brick-2026-08-08.md`, "Next steps"), and even a single `mdw 0x00300000` on it
+  would cheaply settle whether `CONFIG0 = 0xFFFFFFBF` is normal. Both need Jacob's
+  agreement to clip onto working hardware, and a healthy unit needs a `RST` line the dead
+  one did not (`research/hardware-access.md`, "Dumping a healthy unit is harder").
 - Everything in `notes/what-to-build.md` under "Do these first, no firmware required"
   is fair game on it today.
 
@@ -66,7 +86,15 @@ anyway: a tile palette needs a renderer to feed it, button-driven content needs 
 
 ## Track B: the order of operations when the probe lands
 
-Read-only throughout, up to step 5. Nothing below can worsen unit 1's position.
+**All six steps ran on 2026-08-19.** Steps 1 to 5 (read-only) passed; step 6 (the config
+repair, the first flash write) ran and did not revive the unit. Results are in
+`research/brick-2026-08-08.md`, "What SWD actually found" and "The config repair". The
+headlines: the port is alive and unlocked, the application is byte-identical to stock, the
+LDROM exists and has been read (track 48), and `CONFIG0` reads `0xFFFFFFBF`, which is the
+value the bootloader writes on purpose, not the predicted `0xFFFFFF3F` and not a fault.
+
+Read-only throughout steps 1 to 5. Step 6 wrote only the config page, with APROM and LDROM
+hardware-locked, so nothing below step 6 could worsen unit 1's position.
 
 **Practise on the bricked unit, not the good one.** It is already dead, so a mistake costs
 nothing, and it might simply work. The working pair is held back as a *control*, used only
@@ -94,9 +122,24 @@ if unit 1 stays silent.
    and not a vector table: `research/README.md`, the tool's own header, and
    `research/firmware-image-format.md` beside its load-base section. This will be the
    first dump of a Panchip unit that exists.
-6. **Only then:** erase the config page, read back `0xFFFFFFFF`, reset, see if it
-   advertises. No script in `research/tools/` will do this; `swd-recon.sh` is read-only by
-   construction and an erase belongs in a file of its own, written on the day.
+6. **Done 2026-08-19, and it did not revive the unit.** The config page was erased and
+   `CONFIG1`/`CONFIG2`/`CONFIG3` reprogrammed via `research/tools/fmc-repair-config.sh`
+   (the only flash-write script in the repo), verified on read-back and across a physical
+   power cycle. `fmc-ladder1.sh` passed first, confirming the FMC base, the `0x59/0x16/0x88`
+   unlock keys and the `ISPTRG` poll with no writes. The unit still hardfaults identically.
+   `CONFIG0` was never the fault: track 48's bootloader read found the cause (a RAM
+   registration-order tail call) and showed `0xFFFFFFBF` is the value the bootloader writes
+   on purpose, so the repair changed a value that may never have been wrong.
+   *Corrected 2026-08-19: this said "erase the config page, read back `0xFFFFFFFF`". The
+   page is not otherwise blank and an erase alone loses three programmed words; and, as it
+   turned out, `0xFFFFFFFF` is not confirmed to be the right `CONFIG0` at all.*
+   **What to do next** is the ordered list in `research/brick-2026-08-08.md`, "Next steps":
+   read `CONFIG0` on a healthy pair (one word), then optionally the working-unit diff, both
+   needing Jacob's agreement to clip onto working hardware.
+
+**Rules for unit 1's dumps.** `firmware/` is gitignored, so the dumps are not in version
+control and are the only record of a pre-repair device. Keep a copy outside the repo
+before any write. They are reproducible only for as long as SWD keeps working.
 
 **If unit 1 does not answer at step 3**, that is ambiguous between a bad setup and a dead
 chip. Only then attach to unit 2, read-only, in a session with no write command loaded,
@@ -104,7 +147,15 @@ purely to prove the rig works.
 
 ## Track C: the order once flashing works
 
-`joggles-v1` as-is first, since it is already verified, then the ranked patches in
+~~`joggles-v1` as-is first, since it is already verified~~ **Do not. Corrected
+2026-08-19: flashing `joggles-v1` as-is would brick whatever it went on**, healthy units
+included, because it carries the APK image's four missing callback registrations. It is
+"verified" only in the sense that its own hook and extension disassemble correctly; the
+image underneath them is the wrong firmware for this hardware.
+
+The order is now: **rebase the build onto a donor dump, prove it with
+`ota.check(image, { reference })` against that same unit's dump, and only then flash.**
+`referenceUnregistered` must be 0. Then the ranked patches in
 `notes/what-to-build.md`, cheapest first. That list stops having a self-sealing category
 the moment SWD is the delivery route: `PROTECTED_REGIONS` exists only to keep OTA recovery
 possible, so over SWD the GATT table, the OTA handler, the flash driver and the

@@ -6,13 +6,19 @@ LED glasses, app Funky Glasses+. Protocol solved, verified on hardware.
 
 | File | What it holds |
 | --- | --- |
-| `notes/plan-after-the-brick.md` | **the firmware-delivery plan**: three tracks, the rules for unit 2 including the `--ldrom-verified` gate, and the SWD order of operations. For app work the current plan is `notes/parallel-tracks.md` plus `notes/app-plan.md` |
+| **`notes/hardware-state.md`** | **read this first if you are touching a device.** Which physical pair is which by advert suffix, which holds what, where the dumps and backups are with their hashes, and what has been written to what. Written 2026-08-19 after a filename asserted a provenance nobody had checked and two sessions built a model on it. **All three pairs work as of 2026-08-20** |
+| `notes/plan-after-the-brick.md` | **the firmware-delivery plan**: three tracks, the rules for unit 2 including the `--ldrom-verified` gate, and the SWD order of operations. Tracks A and B are done and unit 1 is repaired; **Track C, our own firmware on a real unit, is what is left**. For app work the current plan is `notes/parallel-tracks.md` plus `notes/app-plan.md` |
+| `research/aprom-write-2026-08-20.md` | **the repair, and the first APROM write on this family**: the numbers, the granularity probe, and the three wrong turns between "the script says DONE" and a unit that advertises. Read it before flashing anything |
+| `notes/dump-healthy-unit.md` | the runbook for reading a *working* pair over SWD, self-contained enough to follow at the bench. Also the record that connect-under-reset turned out to be a fallback rather than a prerequisite |
+| `notes/hacked.md` | the one-command display script and the bespoke letterform drawn for this panel: static, 3 columns a letter, the word split across the nose bridge so the notch becomes the gap. `bun run hacked` |
 | `notes/protocol.md` | key, frames, command table, panel geometry |
 | `notes/app-plan.md` | the phone app, the flash-wear numbers, and the ordered "Verify before building" list |
 | `notes/what-to-build.md` | delivery routes, ranked patches, festival ideas, what we decided against |
 | `notes/playlist.md` | the cycled playlist: why stock's button cannot do it, the one-reel design, and the residency defect |
 | `notes/library.md` | the phone's saved content: the three things called "the library" kept apart, store-the-recipe, why width is not a question, and what the four faces are for |
-| `notes/firmware-design.md` | our own firmware: architecture, wire formats, roadmap, safety envelope |
+| **`notes/patch-over-bt.md`** | **how we replace our own firmware over Bluetooth and then do it again**: the resident half a probe alone can rewrite, the two slots that carry every feature, and what each failure leaves behind. Also what it unblocks, and what stays SWD-only |
+| **`research/patch-over-bt-review-2026-08-20.md`** | **the adversarial review of the update loop, and the reason nothing has been flashed.** It found a live bug and a structural gap in the design's central safety claim, and it lists what it attacked and could NOT break, including the four-byte hook and the 2 s long press. **Read it before flashing our own firmware to anything**, and note the findings are being worked, so check `.claude/locks/track-60` for where the fixes got to |
+| `notes/firmware-design.md` | our own firmware: architecture, wire formats, roadmap, safety envelope. **Its "The hook itself" section is the superseded 28-byte design**; the hook is four bytes, `research/donor-dispatcher-2026-08-20.md` |
 | `research/README.md` | index of the teardown. `firmware-internals.md` is what the firmware actually is, tiered by trust in its Provenance section |
 
 Findings go in `research/` with a confidence marker, judgement in `notes/`. **How to
@@ -75,6 +81,10 @@ channel: `notes/protocol.md`, and the `dats.ts` docblock for the DATS row mappin
 | `core/src/content.ts` | the one `Bitmap` plus both encoders. **Render to a `Bitmap`, never straight to bytes** |
 | `core/src/viewport.ts` | the 24-column window, with `alive()` applied **at the window**: masking a wide bitmap draws a hole that travels with the glyph. Also `LoopModel`: a saved scroll has two loops, `'uploaded'` and the panel's 24-longer one |
 | `core/src/playlist.ts` | 2-10 items cycled with no flash per press: statics live, all scrollers packed into one type 1 reel. `Cycler` tracks type 1 residency **itself**, which since track 32 is so a press can be priced before it happens and so a revisit builds nothing at all: the budget's duplicate check is per store now, and no longer re-erases a reel because a drawing went out after it. `notes/playlist.md` |
+| `core/src/press.ts` | **the button drives the playlist**, host side: `PressCycle` binds one connection's button to one `Cycler` over `SUB.BUTTON`/`MSG.BUTTON`. **A press cannot spend an erase**, structurally: it steps to the next step priced `free` and over anything needing a `DATS`, holds no reference to `save`, and a crawl asserts the token is absent. `Cycler.forget()` is called before an advance unless suppression is confirmed AND the event carried `INDEX_NONE`, because an unsuppressed press is the `MODE`-discards-the-live-buffer trap with no `MODE` to see. **No flag may ever suppress the 2 s hold**: the subscription lives in the unit's RAM and survives a disconnect, so the hold is what saves a wearer whose phone walked off. All *derived*: the firmware half is **SWD-only**, since a press arrives in the TIMER0 ISR and no slot may run outside a command frame |
+| `core/src/tiles.ts` | the tile palette, host side: 16 entries of 3 bytes against a **15-byte notify ceiling**, so a palette is four `TILE_DEF` writes and **is not atomic** while a frame is. `Palette` has no half-defined value and `Painter` keeps a believed-word per entry (the `sender.ts` shape), so `frame()` throws until every entry **the frame uses** is acknowledged. `TILE_FRAME` gets no reply by design, so a lost ACK is handled by re-sending the same step. Masking happens at the window, and it **spends entries**: identical content either side of the notch is two tiles |
+| `core/src/subcolumn.ts` | sub-column scroll interpolation, host side. It models the **level** the firmware would ask for, never brightness: the curve belongs to the panel module, so half way is not half light. Two *derived* findings worth knowing: the device's sub-steps are **uneven at most speeds** (an even four-way split exists at only 3 of 10 speed buckets), and the panel's UART is never the binding constraint. Type 1 is one bit per pixel, so `scrollFrames` flattens and refuses grey content |
+| `core/src/tempo.ts` | tap tempo: the beat as `interval88`, 8.8 fixed point in **device ticks**, plus an anchor tick. Integer and in ticks throughout, because a float millisecond is where quantisation creeps back, and whole ticks alone would be ~2% out and a full beat adrift inside 30s. A tap lands on the standing grid or it does not (`onGrid`), which is one rule for every span: judging a multi-beat gap by its implied interval accepts **any** gap past 4 beats, and that killed tempo-change detection in the first draft. One stray tap can never move the tempo, two agreeing ones can. Open, and it decides what this is worth: whether the tick is crystal or RC, which `separationMs`/`measuredPpm` make a **ten-second experiment** |
 | `core/src/effects.ts` | wide seamless loops, computed in float and uploaded once. `fieldGap()` is the closure check with teeth; `seam()` cannot prove a loop closes |
 | `core/src/motifs.ts` | named pictures drawn by arithmetic, not pasted arrays: `ww` (a W per lens, Jacob's Waluigi costume), moustache, zigzag, cap badge, and one wide `wLoop` for the device to scroll. Strokes from named vertices, so a glyph re-scales and follows the geometry constants. All inside rows 2-7, the band alive in every column |
 | `core/src/font.ts` | four faces. `band5` (default), `band6` and `slim5` scroll; `tall7` is static only because it steps glyphs around the notch. **Six rows is the ceiling for anything that moves** and `DEFAULT_FONT` decides how every stored text item renders, so faces are added beside it, never over it. `fonts/fit.ts` is the registry a picker reads plus the free-or-flash boundary per font, which moves when the font does |
@@ -86,6 +96,7 @@ channel: `notes/protocol.md`, and the `dats.ts` docblock for the DATS row mappin
 | `app/src/one-tap.ts` | **the redesign's centre**: `planTap` routes any showable (built-in one command; still content live and clipped, never refused; resident scroller a free `MODE` return; everything else the one flash save behind a sheet) and `runTap` executes exactly the plan shown. The only screen route to the wire; `App.tsx.tap()` is its one caller |
 | `app/src/panel-session.ts` | the ONE `LiveSender` a connection is allowed, owned above every screen. `live()` is safe to race; `dropped()` after anything that takes the panel (`MODE`, `ANIM`, `IMAG`), because a taken buffer must be forgotten, never repaired |
 | `app/src/settings.ts` | what persists between sittings: brightness/speed/direction defaults (applied on connect), per-pair theme colours and the remembered pair for auto-reconnect, keyed on the advert name like the ledger. `theme.ts` is the palette (eleven entries: ten hues plus a neutral, ordered round the wheel) and the context, and it holds the **lit-pixel levels** too, so the compose preview, the draw pad and the library thumbnails wear the pair's colour instead of the three greens each used to write out; level 3 is the accent and `theme.test.ts` fails the build if a grid names a lit colour of its own |
+| `app/src/carried.ts` | **what a pair turned out to be**: one caught `probe()` per connection, owned by `App.tsx` and nowhere else, remembered per advert name, plus the capability gate and the only wording of it. `can()` gates on the **bitmap, never the version**, so a v1 app is safe against a v2 unit and the reverse; bits the app has no name for are counted and never labelled. A stock pair's silence is an **answer**, not a failure, and a test fails the build if any sentence about one reads as an error. Last sitting's answer is deliberately not assignable to the gate, because a unit can be reflashed between sittings, and `firmwareUpdate` is refused however the bit reads. Every crew branch is unreachable today: no unit carries the extension, so the only branch a real pair can produce is the stock one, and **that has not been looked at on a handset either** |
 | `app/src/ble-words.ts` | ble-plx's failures said in the name on the screen. **A platform handle must never reach a person**: it is a MAC on Android and a per-install UUID on iOS, and nothing else in the app is keyed on it. `pairWords(e, name)` is the only wording of a caught BLE error, and the name comes from `App.tsx`'s `pairName` or the row the tap was on |
 | `app/src/proximity.ts` | the Scan count of pairs nearby, from adverts only: it holds `scan`/`stop` and cannot connect. A missing RSSI arrives as `0` or `127`, which is **stronger** than any real reading, so use `signalText`/`bandOf` rather than the number |
 | `app/src/spray.ts` | **other people's pairs**: one still picture at everything in range that is not yours, over the live buffer, so **no flash is spent on anybody's unit** and the wearer clears it with a power cycle. `decide()` is the whole consent policy (`never` beats `always`, `already` beats `ours`, crew skipped for want of a key), `runSpray` is scan-drain-rest, and the wire is four injected functions so the passes run under `bun test`. It builds **no `LiveSender`** (the shell owns the one) and no event carries a platform handle. The screen is `screens/Spray.tsx`, off the Glasses tab, and starting one **lets your own pair go**, because a scan calls `release()`. **Unwitnessed where it counts**: nothing has confirmed the panel keeps the frame after the disconnect, and `SMVEW 02` is still unsent (`notes/what-to-build.md`, "spraying a temporary image at nearby pairs"; the CLI's text version is `cli/src/broadcast.ts`) |
@@ -107,8 +118,27 @@ log is `packages/app/.expo/dev/logs/start.log`, and it decodes with the vendor k
 the clear looked like, so the row orientation, the greys and `CLRL`'s effect are all
 still unwitnessed.
 
+**The firmware side has run too, as of 2026-08-20.** The whole SWD write path drove real
+silicon: 150 pages erased and programmed through the FMC's ISP registers, 19,200 words,
+every one read back twice, and `GLASSES-12C3EF` came back from twelve days dead. `APUEN`,
+both write opcodes against APROM, **512-byte erase granularity** and "a flashed unit
+boots" all moved from *derived* to *verified* in that run. **What is verified is a donor
+image, not ours**: `joggles-v1.bin` has still never run anywhere and is still barred.
+`research/aprom-write-2026-08-20.md`.
+
 ## Traps that fail silently
 
+- **A freshly flashed unit looks exactly like a bricked one, and the button is how you
+  tell them apart.** Three things stack up, all *verified* 2026-08-20 by walking into
+  them. The write script **halts the core and never resumes it**, so when it prints
+  `DONE` the new firmware has never executed and `ICSR` still shows the *old*
+  HardFault. **The on-board button is polled by firmware**, so "power-cycle from the
+  unit's own button" is a no-op on a halted or faulted unit. And a repaired unit then
+  sits switched **off**: dark panel, no advert, **and SWD stops answering** ("cannot
+  read IDR") because the MCU sleeps. That is the same picture as the brick. So:
+  `reset run` over SWD, check `ICSR` at `0xE000ED04` (`VECTACTIVE` 3 is HardFault, 0 is
+  Thread), then a **long press** to switch it on. The red charge LED is driven by the
+  charger IC, not the MCU, and tells you nothing either way
 - ONE 16-byte block per ATT write. The panel decodes the first and drops the rest with
   no error, which reads as corruption
 - Write-without-response has no flow control: pace the writes or columns go stale. One
@@ -143,31 +173,145 @@ leans on are **the DATS row mapping**, which every rendered pixel sits on (verif
 `CLRL` clearing the panel, and type 2 showing only its first 24 columns (one null
 observation by eye).
 
-## Our firmware: built, not yet flashed
+## Our firmware: built, and it must not be flashed to anything
 
-`bun run build-firmware` emits `firmware/joggles-v1.bin`: stock plus an 88-byte `JGX1`
-extension at `abs 0x26a24`, one 28-byte dispatcher hook, the crew AES key and an advert
-rename. One opcode, `J`, whose first payload byte is a sub-command, so every future
-feature is a new sub-command in free flash and **no further edit to the vendor's code**.
-v1 has `HELLO`; `bun cli probe` asks, and a stock unit and a wrong-keyed crew unit both
-answer with silence.
+**`firmware/joggles-v1.bin` MUST NOT GO ON ANY UNIT.** *verified on silicon* 2026-08-19,
+against a dump of the healthy `GLASSES-12E69E`. It is built on the vendor APK's
+application image, and **no pair here runs that image**: a healthy unit populates 26
+callback slots, the APK's registrar fills 22, and the four it omits (`+0x5c` to `+0x68`,
+RAM `0x20000070`-`0x2000007c`) are exactly what the application later branches through.
+That is what bricked `GLASSES-12C3EF` on 2026-08-08, at the `bx` at `abs 0x10f54`.
+`ota.check(image, { reference })` refuses it against a healthy dump, naming that
+instruction. `research/hardfault-0xd38-2026-08-19.md` and `research/image-silicon-match.md`.
+
+*Corrected 2026-08-19: this section was headed "built, not yet flashed" and read as work
+waiting for a courier. The image is not merely undelivered, it is unsafe, and the bar
+covers healthy units too rather than just the broken one.*
+
+**The rebase is done, and it is `firmware/joggles-v2.bin`.** A 256 KB dump of `12E69E`
+is `firmware/dump-12E69E-2026-08-19-*.bin` (gitignored, backed up outside the repo) and
+is the only copy of the correct firmware that exists off-device.
+
+    bun run build-firmware firmware/joggles-v2.bin \
+      --from-donor firmware/dump-12E69E-2026-08-19-a.bin \
+      --from-donor firmware/dump-12E69E-2026-08-19-b.bin --into-fill
+
+It passes `ota.check` with the donor's own dump as the reference: `device-match: all 23
+dispatched callback slots are registered`, `referenceUnregistered === 0`, no fatal
+findings. **That is the check 2026-08-08 did not have**, and it is the one that refuses
+`joggles-v1.bin`. *Still unflashed, and nothing goes on a unit without Jacob.*
+
+*Corrected 2026-08-20 by track 64, and this paragraph was **false when written**. The gate
+**refused** the correctly rebased image and passed the APK-derived one, exactly backwards:
+`expect` defaulted to `DEVICE_VERSION`, which is the APK's `TR1906R04-10`, so v2's honest
+`-12` read as the wrong variant. A dump now sets the expectation, and the sentence above is
+true as of that fix and pinned by tests against both real images. Two more of the same
+kind: `comparePatch` diffed v2 against a stock of a **different build** and produced eight
+fatals of which every one was wrong, while the same-variant case failed **silently**; and
+the "check 2026-08-08 did not have" had never actually run, because it was a warn on every
+path and no CLI passed a reference at all.*
+
+**`bun run ota-check <image> --reference <dump>` is how you actually run the gate**, added
+2026-08-20, and until it existed the silicon half was unreachable from a terminal. Both
+directions are now checked and this is the command to use before anything is flashed:
+
+    bun run ota-check firmware/joggles-v2.bin --reference firmware/dump-12E69E-2026-08-19-a.bin
+
+v2 passes, with `device-match: all 23 dispatched callback slots are registered`. v1 is
+REFUSED with three fatals, one of them `unregistered-callback` naming the `bx at 0x10f54`
+and saying "This is the 2026-08-08 brick". `--for-commit` promotes the unanswered questions
+to fatal and is what any caller about to reach the wire passes. One trap it now handles
+rather than inflicting: the **defaulted** stock baseline is the APK's `-10`, so on a
+donor-rebased `-12` image it is ignored with a note instead of becoming a fatal, because a
+gate that refuses the honest image is how someone learns to skip it. An **explicit**
+`--stock` of the wrong build is still fatal, since that is a false assertion rather than a
+bad guess.
+
+**Everything about the donor build had to be re-derived, and one of them would have cost
+ten opcodes.** `research/donor-dispatcher-2026-08-20.md`: the donor is `TR1906R04-12`,
+73,616 bytes, and the APK is `TR1906R04-10`. The opcode is in `r1` rather than `r2`, the
+`LOOP` block is 32 bytes rather than 28, and **its last four bytes are a `bl set_mode`
+that ten other dispatcher arms branch into**, so the old 28-byte hook would have silently
+taken ten commands out. `ext.branchesInto` found that before anything was built, which is
+what the "scan for branches first" rule is for. The hook is **four bytes** now: one `bl`
+over a compare that can never fire, costing no vendor opcode on either build.
+
+**The delivery route is no longer theoretical.** On 2026-08-20 that donor image was
+written onto `GLASSES-12C3EF` over SWD, 150 pages, and the unit came back. So Track C
+needs a rebased image and nothing else. *verified* on silicon by that run, none of it
+before: `APUEN`, `ISPCMD 0x22` and `0x21` against APROM, **512-byte erase granularity**,
+that a ~136,000-transaction session survives (~12.5 min at 100 kHz), and that a flashed
+unit boots. `research/swdflash-review-2026-08-20.md` is the adversarial review that had
+to happen first, and its finding is the reason to read it before flashing anything: the
+tool as it stood would, on one wrong assumption, have reported success while leaving half
+the window erased.
+
+`bun run build-firmware` emits an image: stock plus a `JGX1` extension in free flash,
+**one four-byte dispatcher hook**, the crew AES key and an advert rename. One opcode,
+`J`, whose first payload byte is a sub-command, so every future feature is a new
+sub-command in free flash and **no further edit to the vendor's code**. `bun cli probe`
+asks `HELLO`; a stock unit and a wrong-keyed crew unit both answer with silence.
+
+On the donor base that is 1,228 bytes at `abs 0x28800`, page-aligned, in the 3,072 bytes of
+programmed zeros at the top of the window (`--into-fill`, and the placement is
+page-aligned rather than word-aligned because an `adr` in the data tail names an address
+16 bytes past it). `EXT_BASE 0x26a24` is where the *APK's* image ends and means nothing
+on a real unit.
+
+**The extension can now replace itself over Bluetooth, and that is what the 1,228 bytes
+are.** `notes/patch-over-bt.md`: a **resident** half written once over SWD that can never
+be rewritten over the air, plus two **slots** in the OTA staging bank at `0x29400` and
+`0x2b400` carrying every feature and replaced alternately. `HELLO` and the five `UPD_*`
+sub-commands are resident and are dispatched before any slot, so a slot whose code faults
+cannot make a unit unreachable by the commands that replace it. *That ordering was
+**vacuous** until 2026-08-20: review 33 found there was no slot dispatch at all, so nothing
+above the resident table was ever reached and the guarantee had nothing to guard. Track 60
+built it, resident table first, and executed it in the simulator. The rule that keeps it
+true is that **no slot feature may run outside a command frame** (no ISR, no per-tick
+hook), which is why notify-on-button-press cannot be a slot and stays SWD-only.* The magic
+word is
+programmed last, so a failed update is not a state to recover from, it is a slot whose
+magic never landed with the live slot untouched. **A bug in the resident half is
+probe-only**, which is why the probe stays on unit 1 and why that half is deliberately
+boring.
+
+**The firmware is executed offline, not just assembled.** `research/tools/thumbsim.ts` is
+an ARMv6-M interpreter plus a model of this FMC, and `updater.test.ts` drives the whole
+loop through it: three updates round the A/B pair, a wrong CRC, an interrupted transfer,
+an out-of-range sequence, and a sweep proving nothing outside the slots is ever written.
+It also runs the vendor's own `LOOP` and `LOOA` arms through the hooked dispatcher and
+gets `set_mode(24)` and `set_mode(35)`, which checks the interpreter as much as the hook.
+**What a pass is worth**: the model does not cover time, interrupts, or the BLE stack
+running concurrently, and its own header says so.
 
 `bun run flash` is the way on, and its subcommands are the safe procedure in order:
 `info` writes nothing, `stage` streams but never commits, `commit --yes` is the one
-barred below and `flash.ts` refuses it outright without `--ldrom-verified`, which nobody
-can honestly pass until LDROM has been dumped. Design and the first-flash procedure: `notes/firmware-design.md`. Wire
+barred below and `flash.ts` refuses it outright without `--ldrom-verified`. **LDROM was
+dumped on 2026-08-19 and has now been read** (track 48, `research/ldrom-2026-08-19.md`):
+the answer is still **no** to `--ldrom-verified`, because the bootloader has no recovery
+entry point (no radio, no GPIO/button, transmit-only UART), so nothing makes a commit
+survivable. **SWD is the delivery route and it is fully proven**: on 2026-08-20 it erased
+and programmed all 150 pages of the application region and brought a dead unit back
+(`research/aprom-write-2026-08-20.md`). That is what makes the OTA bar affordable rather
+than painful: there is a working way on that does not involve the bootloader. Design and
+the first-flash procedure: `notes/firmware-design.md`. Wire
 formats: `core/src/jgx.ts`, `core/src/dfu.ts`. Assembler: `research/tools/thumb.ts`.
 The crew key is `firmware/crew-key.json`, generated on first build and gitignored.
 
 ## Don't
 
 - **Send OTA ctrl `03` (commit) to anything.** On 2026-08-08 a *stock over stock* commit
-  bricked `GLASSES-12C3EF`: staging fine, the device's own CRC matched, it reset itself
-  and never came back, so the fault is the handoff into LDROM rather than the image.
-  `bun run flash stage` is still safe and was run on that unit with no harm. The whole
-  persistent change is `CONFIG0 = 0xFFFFFF3F` and the repair is one erase of the config
-  page at `0x00300000`: `research/brick-2026-08-08.md`, and "Incident" in
-  `research/firmware-flashing.md`. Lift this bar only once LDROM has been dumped
+  bricked `GLASSES-12C3EF`. **Repaired 2026-08-20 over SWD** by writing a healthy pair's
+  application region across; it advertises again and answers as stock. The cause, found by
+  track 48 and track 47: **the vendor APK's application is not the application these units
+  run.** It is 7,532 bytes smaller and its registrar fills 22 of 26 callback slots, so the
+  app tail-calls through an uninitialised RAM pointer at `0x20000074`. `CONFIG0` was never
+  implicated; `0xFFFFFFBF` is what the bootloader writes on purpose, and the config repair
+  run first did nothing. `research/brick-2026-08-08.md`, `research/ldrom-2026-08-19.md`,
+  `research/hardfault-0xd38-2026-08-19.md`, `research/variant-mismatch-2026-08-19.md`.
+  **The bar stays down and the repair does not lift it.** The bootloader has no recovery
+  entry point at all (no radio, no button, transmit-only UART), so a commit that hands to
+  it is exactly as unsurvivable as it was; what changed is that SWD can now undo one
 - Send any image that has not passed `ota.check()` (`bun run ota-check <image>`). It is
   the gate and it already encodes every limit here
 - Relink the firmware, exceed **76,800 bytes** (the application region), or send OTA

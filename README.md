@@ -37,7 +37,7 @@ iPhone has no free route that lasts, and the options are ranked there.
 
     bun run build-firmware      # firmware/joggles-v1.bin, then ota-check it
 
-Stock plus an 88-byte extension appended in free flash, reached by one 28-byte hook in
+Stock plus a `JGX1` extension appended in free flash, reached by one four-byte hook in
 the command dispatcher. It adds a single opcode whose first payload byte is a
 sub-command, so later features cost no further edits to the vendor's code. Built and
 gated, **not yet flashed to hardware**. Architecture and the safety envelope:
@@ -75,6 +75,9 @@ stages to a separate bank at `abs 0x29400` and never erases the running applicat
 an aborted transfer costs nothing, and `bun run flash stage` has run on hardware with no
 harm. The commit is the other half: on 2026-08-08 a *stock over stock* commit bricked
 `GLASSES-12C3EF`, staging fine and the device's own CRC matching, and it never came back.
+**It was repaired on 2026-08-20** over SWD, by writing a healthy pair's application
+region onto it: `research/aprom-write-2026-08-20.md`. The commit stays barred; what
+changed is that there is now a proven way to undo one.
 `bun run flash commit` now refuses without `--ldrom-verified`, which nobody can honestly
 pass until LDROM has been dumped over SWD. `research/firmware-flashing.md` has the
 evidence and the size envelope, `research/brick-2026-08-08.md` the postmortem. Every

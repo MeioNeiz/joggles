@@ -781,7 +781,7 @@ numbers estimates not to plan around. This is the ordering, and nothing else.
 
 | Patch | Why it is worth it |
 | --- | --- |
-| Animation tick 50 to 100 Hz | doubles the smoothness of everything device-side. Compensate the tick-counted timeouts in the same patch, or the 2 s power-off becomes 1 s |
+| Animation tick 50 to 100 Hz | **doubles the time resolution, not the smoothness** (*corrected 2026-08-20 by building it*: compensated, the patch is behaviour-neutral by construction, so nothing looks smoother. Smoothness is the sub-column interpolation row below). Compensate the tick-counted timeouts in the same patch, or the 2 s power-off becomes 1 s: measured in the simulator at 1.05 s uncompensated against 2.09 s with. **Build-time image edit, not a slot** |
 | Notify on button press | the button currently cannot talk to the host at all. Unlocks tap tempo and every phone-side interaction |
 | Seed `rand()` | unseeded, "random" is byte-identical on every boot and two pairs play the same sequence. Which is a feature when the two pairs are yours: see "Syncing several pairs" |
 | Tile palette | best value. Keeps the atomic single-write path but makes the vocabulary ours |
@@ -966,7 +966,8 @@ None of these risks the hardware, and each settles something that changes the pl
    kaleidoscope already work.
 2. **Start two pairs animating together and time the divergence.** Sets the resync
    cadence, or removes the need for one. *Not cheap and not runnable, recorded
-   2026-08-11: it needs two working pairs and there is one. Unit 1 is bricked, so this
+   2026-08-11: it needs two working pairs and there was one. **Unblocked 2026-08-20: unit 1
+   was repaired, so there are three working pairs and this test can now be run.** This
    sits behind the SWD probe and the repair (`notes/plan-after-the-brick.md`, Track B),
    not behind five spare minutes. Every other passage that calls it a five-minute test
    defers to this entry.*

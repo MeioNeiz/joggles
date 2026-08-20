@@ -88,11 +88,22 @@ macOS, so the physical device is the only way to reach the glasses.
   and no error.
 - The phone re-locks after dozing even with `stay_on_while_plugged_in=7`.
   `adb shell dumpsys power | grep mWakefulness` tells you. **`adb shell wm
-  dismiss-keyguard` gets past it** once the human has unlocked once since boot, which
-  `adb shell dumpsys trust` reports as `strongAuthRequired=0x0`. *derived* that it stops
-  working after a reboot, where strong auth is required until that first human unlock.
-  *Corrected 2026-08-11: this said only a human can unlock it, which is too strong and
-  cost an agent a stop it did not need.*
+  dismiss-keyguard` gets past the lock screen only while the device is not actually
+  locked**, which `adb shell dumpsys trust` reports as `deviceLocked=0`, and which is the
+  common case of a screen that has merely dimmed. Once the device has genuinely locked it
+  does **not** work, even with `strongAuthRequired=0x0`: the fingerprint bouncer
+  (`AlternateBouncerView`) keeps focus through `WAKEUP`, `BACK` and `dismiss-keyguard`
+  alike, and a human has to unlock it once. **So check `deviceLocked` before you rely on
+  `dismiss-keyguard`, not after it has failed.**
+  *Corrected 2026-08-20, having cost a second session a stop. This entry has now been
+  wrong in both directions: it first said only a human can unlock, was softened on
+  2026-08-11 to imply `dismiss-keyguard` always works after the first unlock since boot,
+  and the truth is that it turns on `deviceLocked`, not on strong auth. `strongAuthRequired`
+  was the wrong register to read all along.*
+- **The handset is a shared phone, not a bench instrument.** On 2026-08-20 it was taken
+  mid-run by an incoming call, with the shade over the app, and dozed and locked from
+  there. Assume a run can lose it at any point, capture the shot that cannot be
+  reproduced first, and never leave a verification as the last step.
 
 ## The loop
 
@@ -114,11 +125,14 @@ screenshot.
 See the glasses. Every hardware verify item in `notes/app-plan.md` ends in a human looking
 at a 9x24 LED panel, and no amount of `adb` reaches that.
 
-The app itself an agent can drive unattended, end to end: `wm dismiss-keyguard` past the
-lock screen, the deep link above to point it at Metro, `input tap`/`input text` to use it,
-and `screencap` read back as a PNG to see what happened. *Corrected 2026-08-11: this
+The app itself an agent can drive unattended, end to end: `wm dismiss-keyguard` past a
+dimmed screen, the deep link above to point it at Metro, `input tap`/`input text` to use
+it, and `screencap` read back as a PNG to see what happened. *Corrected 2026-08-11: this
 section used to lead with "unlock the phone", which stopped a session that could have
-carried on.*
+carried on. Narrowed again 2026-08-20: "unattended" holds for a dimmed screen and not for
+a locked one, so **one human unlock is a real dependency** and a plan that ends in a
+screenshot should say so up front rather than discover it at the end. The keyguard bullet
+above has the discriminator.*
 
 ## iOS
 

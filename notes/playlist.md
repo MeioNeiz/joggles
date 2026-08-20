@@ -17,6 +17,38 @@ latch at `0x2000306e`) plus "Content in the staging bank" (60-100 B), living in 
 `0x20` content family `notes/firmware-design.md` already reserves. Jacob's direction for
 now: **build what stock can do today, shaped so it becomes the firmware feature later.**
 
+### The host half of the firmware feature is now built, 2026-08-20
+
+*This section stays true about stock and was half wrong about a crew unit, so here is the
+other half.* `core/src/press.ts` is the driver: `PressCycle` binds one connection's
+button to one `Cycler` through `SUB.BUTTON` and `MSG.BUTTON`. It is *derived* throughout,
+because no unit carries the extension and **the slot that would answer `SUB.BUTTON` cannot
+exist**: a press arrives in the TIMER0 ISR, nothing in the slot framework may run outside
+a command frame, and the hook is spent, so the firmware half is **SWD-only with its own
+image** (`notes/patch-over-bt.md`). This paragraph's "the true feature is firmware" is
+therefore still right, and it is a bigger job than the two ranked patches suggest.
+
+Three things worth carrying forward, because each is a decision rather than code:
+
+- **A press cannot spend an erase, structurally rather than by policy.** An advance steps
+  to the next step the cycler prices `free` and steps over anything needing a `DATS`; a lap
+  of nothing but costed steps does nothing and says why. `press.ts` holds no reference to
+  `save` and a source crawl asserts the token is absent. Three reasons: strangers mash this
+  button at a festival, a `BudgetError` inside a notification handler has nowhere to go, and
+  it makes the claim checkable. `individual` mode is button-unusable by the same rule, which
+  is correct rather than a gap.
+- **`Cycler.forget()` exists for one case.** If `SUPPRESS_CYCLE` did not take, the
+  firmware's own `set_mode` moves the panel with the host sending nothing, which is the
+  "`MODE` discarded the live buffer" trap arriving with no `MODE` to see. So a forget
+  precedes the advance unless suppression is confirmed **and** the event carried
+  `INDEX_NONE`, a real index being the firmware saying it cycled. Residency is untouched,
+  so a forget costs one 24-column redraw and never five erases.
+- **The driver's own worst failure is a phone that walks away.** The subscription lives in
+  the unit's RAM and a disconnect does not clear it, so a wearer can be left with a short
+  press that does nothing. The 2 second hold is the only thing that makes that survivable,
+  which is why no flag may ever suppress the hold and why `stop()` reports `cleared: false`
+  with that sentence rather than claiming success.
+
 ## The stock design: cycling writes no flash at all
 
 The key facts, all already in the repo:
@@ -103,11 +135,24 @@ only `DATCPOK`, the same flag `residentHash` reads off the ledger.
   all when its own hash matches, so a revisit builds no payload and spends no interval,
   and it can state the cost of a press **before** the press.
 
-**One thing is still missing on the phone**, and it makes the paragraph above read as
-unknown for ever there: `app/src/ledger-shape.ts`'s `cleanRecord` rebuilds each record
-field by field and does not carry `type`, so a ledger reloaded from `ledger.json` comes
-back typeless. Two lines (`type: typeof raw.type === 'number' ? raw.type : undefined`,
-and a test) and it is done. Track 32 did not own that file.
+*The paragraph that stood here said the phone still dropped the type on reload, so the
+whole section read as unknown for ever there. It landed under track 34, and stricter
+than the line suggested: `app/src/ledger-shape.ts`'s `cleanRecord` keeps `type` only
+when it is 1 or 2, because `budget.storedHash` reads an unrecognised number as a save to
+some other store and would answer questions about a store that does not exist.*
+
+**The wire had the same defect as the residency, and nobody looked, review-32,
+2026-08-19.** `Cycler` believed only `DATCPOK` when deciding what the device holds, and
+then sent `SPEED` and `MODE` regardless of it. So a commit answered `ERROR` or `TIMEOUT`
+switched the panel to a store the same `DATS` had just zeroed, and reported a normal
+press with a cost of one save. It is the defect track 32 was written to fix, fixed in
+`app/src/deliver.ts` and left standing twenty lines away in `core/src/playlist.ts`,
+which the same track owned. Two things let it survive: the test for this case asserted
+residency and cost but never the log, and `StepResult` had no field that could carry the
+answer, so `App.tsx` said *"On the glasses"* for a press that changed nothing. Both are
+fixed: `MODE` now goes out only on `skipped || committed`, and `StepResult.showing`
+carries it, because `cost` cannot - a rejected commit costs a full save and shows
+nothing.
 
 ## Why type 2 is not used for cycling
 

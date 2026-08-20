@@ -30,3 +30,10 @@ node_modules/
 # Live agent coordination state for this machine; the convention is in the README
 .claude/locks/*
 !.claude/locks/README
+
+# A tool called with no output path once wrote two 76,800-byte vendor firmware windows
+# here (2026-08-20, found by track 70). They were byte-identical to the donor's
+# application region and carried TR1906R04-12, so committing them would have broken the
+# "no vendor binaries" rule via a path nobody was watching. Ignored so a recurrence
+# cannot be staged; the real fix is the caller that resolved its output to `undefined`.
+undefined/
