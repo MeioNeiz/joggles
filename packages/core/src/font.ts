@@ -59,6 +59,7 @@
  */
 import { ROWS } from './display.js'
 import { BAND6 } from './fonts/band6.js'
+import { CAPS5 } from './fonts/caps5.js'
 import * as kern from './fonts/kern.js'
 import { type StaticOptions, staticText } from './fonts/place.js'
 import type { Font } from './fonts/types.js'
@@ -97,12 +98,25 @@ export const HEIGHT = 5
  * What everything here uses unless told otherwise, and what a new message starts
  * as.
  *
- * `band6` for the measured reason in this file's head: no two letters or digits
- * in it are within one pixel of each other, where `band5` has ten such pairs.
+ * `caps5`, Jacob's call 2026-08-20, and the measurement in
+ * `packages/cli/src/legibility.ts` backs it rather than merely permitting it: it is
+ * the only face here that is narrow **and** unambiguous. `band6` also has no pair
+ * within one pixel, but it is the widest, so choosing it meant choosing the face
+ * that scrolls soonest and costs flash first; `band5` and `slim5` are narrower and
+ * ambiguous, at ten and fifteen such pairs.
+ *
+ * **What it costs is lowercase, and the cost is silent by design.**
+ * `kern.glyphRows` folds a lowercase character onto its capital exactly as `tall7`
+ * does, so "Jacob" renders as "JACOB" rather than being refused. Every new message
+ * is therefore shouted unless someone picks another face, which is a legibility
+ * trade at 5 rows of cap height and not an oversight. A message that wants two
+ * cases wants `band6`, and the picker on the Message screen is how you get it.
+ *
  * This is **not** the read path for stored items that name no face; that is
  * `LEGACY_FONT`, which stays `band5` so nothing already saved changes shape.
+ * Changing this constant changes what a *new* item starts as and nothing else.
  */
-export const DEFAULT_FONT = BAND6
+export const DEFAULT_FONT = CAPS5
 
 /**
  * A base gap in columns, or the full set. The number form is what every call

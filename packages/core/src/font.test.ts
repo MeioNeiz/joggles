@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { COLS, ROWS, alive } from './display.js'
 import * as font from './font.js'
 import { BAND5 } from './fonts/band5.js'
-import { BAND6 } from './fonts/band6.js'
+import { CAPS5 } from './fonts/caps5.js'
 import { FONTS } from './fonts/fit.js'
 import * as kern from './fonts/kern.js'
 import { staticText } from './fonts/place.js'
@@ -163,8 +163,15 @@ test('no kerned pair puts two glyphs closer than the base spacing', () => {
 
 test('kerning closes an open pair and leaves a closed one alone', () => {
   // T's arm overhangs three empty columns; H and I face each other with stems.
-  expect(font.textWidth('To')).toBeLessThan(font.textWidth('To', { kern: false }))
-  expect(font.textWidth('HI')).toBe(font.textWidth('HI', { kern: false }))
+  // band5 is NAMED because the pair this asserts is a lowercase one: caps5 became the
+  // default and folds `o` onto `O`, so `To` is `TO` there and has nothing to tuck under.
+  // The behaviour under test is kerning, not whichever face is currently default.
+  expect(font.textWidth('To', { font: BAND5 })).toBeLessThan(
+    font.textWidth('To', { font: BAND5, kern: false }),
+  )
+  expect(font.textWidth('HI', { font: BAND5 })).toBe(
+    font.textWidth('HI', { font: BAND5, kern: false }),
+  )
 })
 
 test('kerning never widens anything', () => {
@@ -334,11 +341,12 @@ test('an item with no font stored, or an unknown one, reads as band5 for ever', 
 // questions - what an old item reads as, and what a new one starts as - and
 // asserting both in one test is what made the default look load-bearing for
 // stored content when it never was.
-test('a new item starts in band6, and old items are unaffected by that', () => {
-  expect(font.DEFAULT_FONT).toBe(BAND6)
+test('a new item starts in caps5, and old items are unaffected by that', () => {
+  expect(font.DEFAULT_FONT).toBe(CAPS5)
   expect(font.LEGACY_FONT).toBe(BAND5)
   expect(font.DEFAULT_FONT).not.toBe(font.LEGACY_FONT)
 })
+
 
 /**
  * The property the default is chosen for, asserted so it cannot quietly regress.

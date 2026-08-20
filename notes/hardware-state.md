@@ -14,7 +14,7 @@ than its filename.
 
 | Advert | Role | State | On the probe? |
 | --- | --- | --- | --- |
-| **GLASSES-12C3EF** | **unit 1, REPAIRED** | **working as of 2026-08-20.** The donor's application was written over SWD, 150 pages, verified byte-identical. Advertises, connects, answers as stock. `research/aprom-write-2026-08-20.md` | **Probe clipped on and staying on** as the recovery net for Track C (Jacob, 2026-08-20). SWD stops answering while the unit is awake (sleeping MCU, not pin stealing); long-press it off to read it. |
+| **GLASSES-12C3EF** | **unit 1, REPAIRED** | **working as of 2026-08-20.** The donor's application was written over SWD, 150 pages, verified byte-identical. Advertises, connects, answers as stock. Seen advertising at -57 dBm from the app on 2026-08-20 afternoon. `research/aprom-write-2026-08-20.md` | **Probe REMOVED and the case reassembled**, Jacob, 2026-08-20 afternoon, reversing his own morning decision to leave it on. **Track C now costs a case-opening and a re-clip**, and that is the price of the first write of our own firmware, because a bug in the resident half is probe-only. Nothing of ours was ever flashed. |
 | **GLASSES-12E69E** | **the healthy DONOR** | working, untouched. Read-only dumped 2026-08-19; nothing was ever written to it. | No. The probe moved to unit 1 for the repair. |
 | **GLASSES-125B37** | older healthy pair | working, not involved in the repair. Was on BLE earlier; Jacob powered it OFF. | No. |
 
