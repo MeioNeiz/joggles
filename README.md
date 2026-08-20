@@ -35,13 +35,23 @@ iPhone has no free route that lasts, and the options are ranked there.
 
 ## Our own firmware
 
-    bun run build-firmware      # firmware/joggles-v1.bin, then ota-check it
+    # rebuild rather than trusting the file on disk: it goes stale silently
+    bun run build-firmware firmware/joggles-v2.bin \
+      --from-donor firmware/dump-12E69E-2026-08-19-a.bin \
+      --from-donor firmware/dump-12E69E-2026-08-19-b.bin --into-fill
+    bun run ota-check firmware/joggles-v2.bin --reference <a dump of the target>
 
-Stock plus a `JGX1` extension appended in free flash, reached by one four-byte hook in
-the command dispatcher. It adds a single opcode whose first payload byte is a
-sub-command, so later features cost no further edits to the vendor's code. Built and
-gated, **not yet flashed to hardware**. Architecture and the safety envelope:
-`notes/firmware-design.md`.
+Stock plus a `JGX1` extension in free flash, reached by one four-byte hook in the command
+dispatcher. It adds a single opcode whose first payload byte is a sub-command, so later
+features cost no further edits to the vendor's code, and the extension can **replace its
+own feature half over Bluetooth** afterwards: a resident block only a probe can rewrite,
+plus two alternating slots. Built and gated, and **still not flashed to hardware**.
+
+`firmware/joggles-v1.bin` is **barred from every unit**, not merely undelivered: it is
+built on the phone APK's application, which no pair here runs, and it bricked a unit on
+2026-08-08. `joggles-v2.bin` is the rebase onto a real unit's dump and is the only one
+that passes the gate. Architecture and the safety envelope: `notes/firmware-design.md`,
+`notes/patch-over-bt.md`, and read `notes/swd-flashing.md` before flashing anything.
 
 ### macOS Bluetooth permission
 
@@ -59,9 +69,9 @@ fails to load at runtime.
 
 | Property | Value |
 | --- | --- |
-| Advertised name | `GLASSES-{MAC}` |
+| Advertised name | `GLASSES-{MAC}`, 14 fixed bytes: an 8-byte prefix plus the last six of the MAC, so a rename prefix must be **exactly** 8 bytes |
 | SoC | ARM Cortex-M, 16 KB SRAM, **16 MHz crystal** (was recorded as 26 MHz; the part on our board is marked `16.000MHz`) |
-| Firmware | `TR1906R04-10`, 66,084 bytes in a 76,800-byte application region |
+| Firmware | **`TR1906R04-12` on every unit here**, 73,616 bytes in a 76,800-byte application region. The phone APK carries `TR1906R04-10`, which is 7,532 bytes smaller and **is not the application these units run**: that mismatch is the 2026-08-08 brick |
 | OTA | service `fd00`, Panchip-style profile (no vendor name in the binaries) |
 | Panel | 9 rows x 24 columns in total, spanning both lenses (*derived*), two bits per pixel |
 | Encryption | AES-128-ECB, one 16-byte block per write; OTA is **not** encrypted |

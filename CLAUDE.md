@@ -45,7 +45,11 @@ is where the detail lives. This file is pointers plus the traps that bite everyw
   <name>` and `bun run packages/cli/src/fontsheet.ts` need nothing attached. Env setup
   (macOS Bluetooth permission, noble `trustedDependencies`): README
 - Firmware analysis is `research/tools/fwtool.ts`, **not grep**: its header explains the
-  two scanning traps that have already put wrong entries in the docs. Edits go through
+  two scanning traps that have already put wrong entries in the docs. **`fwtool modes`
+  hardcodes the APK's table addresses and its 33 modes**, so pointed at a donor window it
+  prints 33 rows of the wrong code: that is trap 3 wearing a subcommand's clothes, and a
+  real unit gates `set_mode` at 45. `regions` was fixed to resolve by content (track 58);
+  `modes` has not been. Edits go through
   `research/tools/patch.ts`, which refuses any patch whose expected old bytes do not
   match. Pre-flash verification: "Safe procedure" in `research/firmware-flashing.md`
   (steps 1-3 only, step 4 is struck) and "Reviewed 2026-08-09" in
@@ -82,7 +86,7 @@ channel: `notes/protocol.md`, and the `dats.ts` docblock for the DATS row mappin
 | `core/src/session.ts` | `Glasses`, all sequencing, transport-agnostic through `transport.ts`. `Glasses.attach(transport, name)`; the CLI's `open()` lives in `cli/src/glasses.ts` |
 | `core/src/budget.ts` | flash wear, plus the only record of what the device is holding. `session.save()` is the only caller of `dats.datsComplete()` and `choke-point.test.ts` fails the build if a second appears. Duplicate payloads skip; 3s apart, 30/hour or 200/day **throw** rather than queue. Every `SaveRecord` says which store it hit, so the skip and `storedHash()` are **per DATS type**, and a record with no type reads as unknown rather than as type 1. `bun cli ledger` |
 | `core/src/content.ts` | the one `Bitmap` plus both encoders. **Render to a `Bitmap`, never straight to bytes** |
-| `core/src/viewport.ts` | the 24-column window, with `alive()` applied **at the window**: masking a wide bitmap draws a hole that travels with the glyph. Also `LoopModel`: a saved scroll has two loops, `'uploaded'` and the panel's 24-longer one |
+| `core/src/viewport.ts` | the 24-column window, with `alive()` applied **at the window**: masking a wide bitmap draws a hole that travels with the glyph. Also `LoopModel`: a saved scroll has two loops, `'uploaded'` and the panel's 24-longer one. **Two known defects, recorded 2026-08-20 and deliberately not fixed yet**: `marqueeWidth` is `cols + 24` where the firmware's forward period is `cols + 25` and its reverse `cols + 26`, so a preview is one column short (`bounce.test.ts` asserts the difference on purpose, so fixing it means settling that test too); and `marqueeAt` models the bracket **after** the content when the 24 are a **prefix**, which is the same off-by-one seen from the other side |
 | `core/src/playlist.ts` | 2-10 items cycled with no flash per press: statics live, all scrollers packed into one type 1 reel. `Cycler` tracks type 1 residency **itself**, which since track 32 is so a press can be priced before it happens and so a revisit builds nothing at all: the budget's duplicate check is per store now, and no longer re-erases a reel because a drawing went out after it. `notes/playlist.md` |
 | `core/src/press.ts` | **the button drives the playlist**, host side: `PressCycle` binds one connection's button to one `Cycler` over `SUB.BUTTON`/`MSG.BUTTON`. **A press cannot spend an erase**, structurally: it steps to the next step priced `free` and over anything needing a `DATS`, holds no reference to `save`, and a crawl asserts the token is absent. `Cycler.forget()` is called before an advance unless suppression is confirmed AND the event carried `INDEX_NONE`, because an unsuppressed press is the `MODE`-discards-the-live-buffer trap with no `MODE` to see. **No flag may ever suppress the 2 s hold**: the subscription lives in the unit's RAM and survives a disconnect, so the hold is what saves a wearer whose phone walked off. All *derived*: the firmware half is **SWD-only**, since a press arrives in the TIMER0 ISR and no slot may run outside a command frame |
 | `core/src/tiles.ts` | the tile palette, host side: 16 entries of 3 bytes against a **15-byte notify ceiling**, so a palette is four `TILE_DEF` writes and **is not atomic** while a frame is. `Palette` has no half-defined value and `Painter` keeps a believed-word per entry (the `sender.ts` shape), so `frame()` throws until every entry **the frame uses** is acknowledged. `TILE_FRAME` gets no reply by design, so a lost ACK is handled by re-sending the same step. Masking happens at the window, and it **spends entries**: identical content either side of the notch is two tiles |
@@ -161,14 +165,21 @@ image, not ours**: `joggles-v1.bin` has still never run anywhere and is still ba
   atomic clear, undocumented and never sent by the vendor app
 - `CHAR_BULK_A`/`_B` are not interchangeable: A is the DATS stream, B is live
 - BLE is one connection per device, but one phone can hold several devices
-- **The device appends ~24 blank columns to a scrolling type 1 save, so the panel's
-  loop is 24 columns longer than the bitmap.** A preview that walks the bitmap alone
-  shows no gap where the panel shows a full screen of it: that was a real bug, fixed in
-  `app/src/Preview.tsx` by walking `viewport.frames(..., { loop: 'panel' })`. A client
-  gap **adds** to the device's, which is why `content.SCROLL_GAP` is 0: it is what
-  yields the one screen width, and 24 yields two. Measured off the app's wire log plus
-  one look at the panel; whether the 24 survives without a restore from flash is the
-  open half: `research/loop-gap-2026-08-10.md`
+- **The device puts ~24 blank columns on a scrolling type 1 save, so the panel's loop is
+  24 columns longer than the bitmap.** A preview that walks the bitmap alone shows no gap
+  where the panel shows a full screen of it: that was a real bug, fixed in
+  `app/src/Preview.tsx` by walking `viewport.frames(..., { loop: 'panel' })`. A client gap
+  **adds** to the device's, which is why `content.SCROLL_GAP` is 0: it is what yields the
+  one screen width, and 24 yields two.
+  ***Corrected 2026-08-20: this said "appends", and they are a PREFIX.*** `DATS` sets the
+  write offset to `0x30` and grows the expected length by `0x30`, and `DATCP` records
+  `ncols = bytes/2 + 24`. *verified* off two real units' flash: `12E69E` reads
+  `ncols = 103` with its first non-blank column at exactly 24, and unit 1 reads
+  `ncols = 164`, the same. `research/mode-03-2026-08-20.md`. Since `set_mode(2)` and
+  `set_mode(3)` both zero the start column, **`dir` 0 opens on the lead-in and never
+  reaches a trailing bracket, and `dir` 1 gets the trailing one** - which also settles
+  `research/loop-gap-2026-08-10.md`'s open half and means the first forward pass after a
+  `MODE` opens with a dark frame by construction
 
 **What is still unproven, and the order to settle it in**: the seven-item list in
 `notes/app-plan.md`, "Verify before building". The three *derived* claims the code already

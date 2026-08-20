@@ -533,7 +533,7 @@ only for zero versus non-zero:
 | `MODE 01 00` | static |
 | `MODE 01 nn` | static, **inverted** (`XOR 0xffff` at `abs 0x21ff6`) |
 | `MODE 02 00` / `nn` | scroll left / scroll right |
-| `MODE 03 00` / `nn` | scroll with vertical bounce, and its mirror |
+| `MODE 03 00` / `nn` | scroll with vertical bounce, and the second byte is a **horizontal** direction, not a mirror (*corrected 2026-08-20*: both variants carry the same 14-entry phase table byte for byte and differ only in which way the start column walks. `research/mode-03-2026-08-20.md`). **This whole table is APK-only**: the donor gates `set_mode` at 45 modes against the APK's 33, so a real unit numbers the second-byte variants 40/41/42 where this table says 29/30/31 |
 
 So `MODE 01 n` for n = 0..7 yields exactly **two** displays. The "n=0..7 differ on
 hardware" tension recorded in `notes/protocol.md` and `vendor-app-protocol.md` is

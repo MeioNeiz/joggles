@@ -239,7 +239,13 @@ export const exitRhythm = () => frame('SOUT')
  *
  *     MODE 01 00 / nn   static, and static inverted
  *     MODE 02 00 / nn   scroll left, scroll right
- *     MODE 03 00 / nn   vertical bounce, and its mirror
+ *     MODE 03 00 / nn   horizontal scroll PLUS a vertical bounce, both directions
+ *                       (corrected 2026-08-20: this said "vertical bounce, and its
+ *                       mirror". The second byte is a HORIZONTAL direction, exactly
+ *                       as it is for MODE 02, and the mirror never existed. The two
+ *                       variants carry the same phase table byte for byte and differ
+ *                       only in which way the start column walks.
+ *                       research/mode-03-2026-08-20.md, core/src/bounce.ts)
  *
  * Replaces `scrollLeft`/`scrollRight`/`modeStatic`/`modeFlash`, which were
  * transcribed from the app's table and **wrong**: `scrollLeft` built `MODE 03`

@@ -73,13 +73,23 @@ export const TYPE_IMAGE = 2
  * **which** bracket is walked, not **how many**. So the model predicts one bracket in
  * both directions, and has now been looked at twice.
  *
- * **The contrary observation, still unexplained.** A solid 32-column block looped
- * with no dark pass at all in the session that saved it (2026-08-10, *verified*). So
- * either the device's 24 arrives only once the save has been restored from flash, or
- * one of the two readings is wrong. `research/loop-gap-2026-08-10.md` names the
- * experiment; it is two looks and no flash. **Nobody has measured the size**: one
- * panel width and two are told apart by whether the panel goes properly empty for a
- * beat or only for an instant, and that look is still owed.
+ * **Settled 2026-08-20 from the firmware and from two units' flash, and the
+ * attribution above is INVERTED.** The 24 are a **prefix**, not a bracket either side:
+ * `DATS` sets the write offset to `0x30` and grows the expected length by `0x30`, and
+ * `DATCP` records `ncols = bytes/2 + 24`. *verified* off flash: `12E69E` reads
+ * `ncols = 103` with its first non-blank column at exactly 24, unit 1 reads `ncols = 164`
+ * the same way. And because `set_mode(2)` and `set_mode(3)` both zero the start column,
+ * **`dir` 0 starts ON the lead-in and never reaches a trailing bracket, while `dir` 1
+ * gets the trailing one** - the opposite way round from what this docblock said, and it
+ * has been cited as evidence twice. The magnitude was right; only the attribution was
+ * wrong. `research/mode-03-2026-08-20.md`.
+ *
+ * That also explains the contrary observation this block used to call unexplained: a
+ * solid 32-column block looping with no dark pass (2026-08-10). A forward pass opens on
+ * the lead-in and then never sees a gap again, so there is nothing to notice mid-loop.
+ * `viewport.marqueeAt` models the bracket AFTER the content, which is why it is one
+ * column short of the firmware: the forward period is `cols + 25` and the reverse
+ * `cols + 26`, not `cols + 24`. That is a live defect, recorded rather than fixed here.
  *
  * Two consequences. `content.SCROLL_GAP` is 0, because a client gap **adds to** this
  * one rather than replacing it and one screen's width is what was wanted. And

@@ -14,7 +14,7 @@ than its filename.
 
 | Advert | Role | State | On the probe? |
 | --- | --- | --- | --- |
-| **GLASSES-12C3EF** | **unit 1, REPAIRED** | **working as of 2026-08-20.** The donor's application was written over SWD, 150 pages, verified byte-identical. Advertises, connects, answers as stock. Seen advertising at -57 dBm from the app on 2026-08-20 afternoon. `research/aprom-write-2026-08-20.md` | **Probe REMOVED and the case reassembled**, Jacob, 2026-08-20 afternoon, reversing his own morning decision to leave it on. **Track C now costs a case-opening and a re-clip**, and that is the price of the first write of our own firmware, because a bug in the resident half is probe-only. Nothing of ours was ever flashed. |
+| **GLASSES-12C3EF** | **unit 1, REPAIRED** | **working as of 2026-08-20.** The donor's application was written over SWD, 150 pages, verified byte-identical. Advertises, connects, answers as stock. Seen advertising at -57 dBm from the app on 2026-08-20 afternoon. `research/aprom-write-2026-08-20.md` | **Probe BACK ON, and the port is alive**, 2026-08-20 late afternoon. *Corrected in place: this said the probe was removed and the case reassembled, which was true for about half an hour before Jacob re-clipped it.* `DPIDR 0x0bb11477`, Cortex-M0 detected, three byte-identical 256 KB dumps taken. SWD answers, so the unit is switched OFF; it goes silent while awake. Nothing of ours has been flashed. |
 | **GLASSES-12E69E** | **the healthy DONOR** | working, untouched. Read-only dumped 2026-08-19; nothing was ever written to it. | No. The probe moved to unit 1 for the repair. |
 | **GLASSES-125B37** | older healthy pair | working, not involved in the repair. Was on BLE earlier; Jacob powered it OFF. | No. |
 
@@ -57,6 +57,9 @@ All in `firmware/` (gitignored) with copies in `~/personal/joggles-dumps-backup/
 | `dump-unit1-2026-08-19-{a,b,c}.bin` | 12C3EF unit 1 | `f6028078…` | 3x byte-identical. The bricked state. `-a` backed up. |
 | `ldrom-unit1-2026-08-19.bin` | 12C3EF unit 1 | `412c1931…` | 9216 B bootloader (alias of `0x3dc00`). |
 | `sram-12E69E-2026-08-19.bin` | 12E69E | - | a good-boot SRAM capture. **Was misnamed `sram-unit1`**; corrected today. Contains `GLASSES-12E69E` x2. |
+| `dump-unit1-2026-08-20-pre-jgx-{a,b,c}.bin` | 12C3EF unit 1 | `61a93381…` | **3x byte-identical**, read 2026-08-20 late afternoon, and the pre-flash baseline for the first write of our own firmware. Identified by CONTENT, not filename: the application holds `TR1906R04-12` (the donor image) and the OTA staging bank still holds `TR1906R04-10`, the brick image, which is the pair of strings that says unit 1. |
+| `sprom-unit1-2026-08-20.bin` | 12C3EF unit 1 | - | 512 B of the SPROM at `0x00200000`, the vendor's ID block. **No `0x0-0x3ffff` dump contains it**, and `swdflash plan` still says it has never been read, which is now stale: it was archived at 01:16. |
+| `joggles-v2-STALE-0315.bin` | - | - | the image as built at 03:15, kept beside the rebuild deliberately. **It predates the day's firmware fixes by ten hours**, so it carries the `UPD_DATA` cross-slot bug and no slot dispatch at all. 1,103 bytes differ from the current `joggles-v2.bin`. Do not flash it. |
 
 ## Config, and what was written today
 

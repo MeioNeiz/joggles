@@ -262,13 +262,29 @@ only one that writes.
 
 ### 1. Build the image, and check it on its own
 
-    bun run build-firmware
-    bun run ota-check firmware/joggles-v1.bin firmware/TR1906R04-10_OTA.bin
+**REBUILD IT. Do not trust the file already on disk.** On 2026-08-20 the
+`firmware/joggles-v2.bin` sitting in the tree was ten hours old, built before that day's
+firmware work, and flashing it would have put the pre-fix loop on the unit: the `UPD_DATA`
+bug that can overwrite the live slot, no slot dispatch at all, and `fmc_unlock` with no
+register read-back. **1,103 bytes differed** from the rebuild. Nothing warns you: the file
+is gitignored so `git status` says nothing, its name does not change, and both versions
+pass every gate. The only tell is its mtime against `research/tools/`. The stale copy was
+kept as `firmware/joggles-v2-STALE-0315.bin` rather than deleted, so the size of the
+mistake is on record.
 
-`build-firmware` already runs `ota.check` and refuses to emit an image that fails, so
-this is a second look rather than a new one. The image needs no change for SWD:
-`firmware/joggles-v1.bin` is the same container the OTA path would have carried, and
-`swdflash` writes `ota.plaintext()` of it.
+    bun run build-firmware firmware/joggles-v2.bin \
+      --from-donor firmware/dump-12E69E-2026-08-19-a.bin \
+      --from-donor firmware/dump-12E69E-2026-08-19-b.bin --into-fill
+    bun run ota-check firmware/joggles-v2.bin --reference <a dump of the target>
+
+`build-firmware` already runs `ota.check` and refuses to emit an image that fails, so this
+is a second look rather than a new one. **Pass `--reference`**, though: without it the
+silicon half of the gate does not run at all, which is the check 2026-08-08 did not have.
+Read the resident size back off the build output and make sure it is the size you expect,
+since that number is the cheapest proof the image contains what you just wrote.
+
+The image needs no change for SWD: it is the same container the OTA path would have
+carried, and `swdflash` writes `ota.plaintext()` of it.
 
 ### 2. Read the plan
 
