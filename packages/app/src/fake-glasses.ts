@@ -54,6 +54,56 @@ export const FAKE_AVAILABLE: boolean = typeof __DEV__ !== 'undefined' && __DEV__
  */
 export const FAKE_NAMES = ['GLASSES-FA4E01', 'GLASSES-FA4E02'] as const
 
+/** Prefix on every simulated handle, so a handle says which source produced it. */
+export const FAKE_ID_PREFIX = 'fake:'
+
+/** Whether an advert name belongs to a simulated pair. The name is the only key. */
+export const isFakeName = (name: string): boolean =>
+  (FAKE_NAMES as readonly string[]).includes(name)
+
+/** Whether a platform handle is a simulated one. */
+export const isFakeHandle = (id: string): boolean => id.startsWith(FAKE_ID_PREFIX)
+
+/**
+ * One source's adverts, with the other source's dropped on the floor.
+ *
+ * Track 66's structural half. The switch between the radio and the fake pairs is not
+ * instant: `useFake` stops the scanner it is leaving and then flips, and a native scan
+ * callback already queued arrives after that, into whatever is listening now. One leaked
+ * advert is a real pair in a list captioned "simulated pairs only", which is the exact
+ * claim this project keeps `notes/hardware-state.md` to stop anyone making.
+ *
+ * So membership is decided by the advert name rather than by timing, and it is decided at
+ * the one door between the two sources (`ble.ts`, `ActiveScanner.scan`) rather than in
+ * each of the three consumers. `FAKE_NAMES` cannot collide with a real unit's advert -
+ * `FA4E` is not a MAC suffix any of these produce - so a name is a sound test of which
+ * source an advert came from.
+ */
+export function onlyFrom<S extends { name: string }>(
+  simulated: boolean,
+  onFound: (unit: S) => void,
+): (unit: S) => void {
+  return (unit) => {
+    if (isFakeName(unit.name) === simulated) onFound(unit)
+  }
+}
+
+/**
+ * Why a handle from the source the app is not on is refused, in words.
+ *
+ * **It takes no handle, and that is the point.** This used to be a template literal with
+ * the id in it, thrown by `FakeScanner.connect`, and the id it was handed for a leftover
+ * real row was that pair's MAC. `pairWords` scrubs a handle that follows the word
+ * "device", which is where ble-plx puts one, so a sentence of our own invention walked
+ * straight through it onto the screen. A wording function with nothing to interpolate
+ * cannot regress: `ble-words.ts` for the rule, `fake-glasses.test.ts` for the crawl that
+ * keeps every other thrown message the same way.
+ */
+export const wrongSourceWords = (simulated: boolean): string =>
+  simulated
+    ? 'That row came from the real scan and the app is on simulated glasses. Scan again.'
+    : 'That row is a simulated pair and the app is on real glasses. Scan again.'
+
 /** What the modelled panel is doing, for a dev view to draw. */
 export interface FakePanelState {
   /** 9x24 of levels 0-3, row 0 at the bottom, as `display.Grid` orders them. */
@@ -263,9 +313,14 @@ export class FakeDevice {
    * to tidy up, deliberately, so the next handshake has to be the thing that recovers.
    *
    * Nothing here re-checks the length. The device took the announcement or it did
-   * not, and answering DATCPOK to a payload that never fitted is precisely the shape
-   * of track 32's open defect: `deliver()` sends `MODE` on anything that is not
-   * `refused`, so a wrong ERROR here would hide it and a wrong DATCPOK would invent it.
+   * not, and answering the wrong reply is how a fake invents or hides a defect at the
+   * caller: `MODE` now goes out only on `skipped` or `committed`, in `deliver()` and
+   * in `playlist.Cycler` both, so a wrong ERROR here makes a working save look like
+   * the panel froze and a wrong DATCPOK makes a lost save look like it landed.
+   *
+   * *Corrected by review-32: this called that "track 32's open defect" and said
+   * `deliver()` sends `MODE` on anything that is not `refused`. Track 32 closed the
+   * `deliver()` half and review-32 the `Cycler` half.*
    */
   private complete(): Uint8Array {
     const up = this.upload
@@ -439,7 +494,7 @@ export class FakeScanner implements Scanner {
         // A slow wander between about -45 and -85 dBm, out of phase per pair.
         const swing = Math.sin((tick + i * 7) / 6)
         onFound({
-          id: `fake:${name}`,
+          id: `${FAKE_ID_PREFIX}${name}`,
           name,
           rssi: Math.round(-65 + swing * 20),
         })
@@ -456,9 +511,11 @@ export class FakeScanner implements Scanner {
 
   async connect(id: string): Promise<Transport> {
     await this.stop()
-    const name = id.replace(/^fake:/, '')
-    if (!FAKE_NAMES.includes(name as (typeof FAKE_NAMES)[number])) {
-      throw new Error(`no such simulated pair: ${name}`)
+    const name = isFakeHandle(id) ? id.slice(FAKE_ID_PREFIX.length) : ''
+    if (!isFakeName(name)) {
+      // Never the id itself. On Android that is the real pair's MAC, and the tap that
+      // gets here is a row left over from the real scan.
+      throw new Error(wrongSourceWords(true))
     }
     // A real connect is a fixed ~880 ms and it is the dominant term once pacing is
     // tuned, so the connect ceremony reads as it does in the field.

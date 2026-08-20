@@ -150,10 +150,15 @@ export function reelDriver(glasses: Glasses, session: PanelSession): pl.Driver {
  * A cycler over the app's session, seeded with what the pair is believed to hold.
  *
  * Seeding matters: `Cycler` tracks type 1 residency itself rather than asking the
- * budget, because the budget's duplicate check compares the last save of ANY type and
- * would re-erase (`notes/playlist.md`, "residency is not what the budget tracks").
- * Handing it the ledger's hash is what makes the first press of an already-committed
- * reel free instead of a re-upload.
+ * budget, so a press can be priced before it happens and a revisit issues no `DATS` at
+ * all. Handing it the ledger's hash is what makes the first press of an
+ * already-committed reel free instead of a re-upload.
+ *
+ * *Corrected by review-32: this said the cycler tracks residency itself "because the
+ * budget's duplicate check compares the last save of ANY type and would re-erase".
+ * That stopped being true the day track 32 gave `SaveRecord` a DATS type. The check is
+ * per store now, the two agree, and what the cycler still buys is the prediction and
+ * the skipped `DATS` (`notes/playlist.md`, "residency is not what the budget tracks").*
  */
 export function cyclerFor(
   glasses: Glasses,

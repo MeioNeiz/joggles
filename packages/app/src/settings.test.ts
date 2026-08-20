@@ -196,3 +196,65 @@ test('groups survive a reload, and a malformed one is dropped alone', () => {
     { name: 'Also', keys: [] },
   ])
 })
+
+test('what a pair answered survives a reload, keyed on the advert name', () => {
+  // Same key as the ledger, the nicknames and the themes, which is what lets a
+  // reconnect say something before the probe lands. `carried.ts` explains why the
+  // answer that comes back is a `Remembered` and cannot be gated on.
+  const a = memory()
+  const first = createSettings(a.file)
+  first.setCarried('GLASSES-12C3EF', {
+    kind: 'crew',
+    version: 2,
+    capabilities: 9,
+    at: 1_700_000_000_000,
+  })
+  first.setCarried('GLASSES-125B37', {
+    kind: 'stock',
+    version: 0,
+    capabilities: 0,
+    at: 1_700_000_000_001,
+  })
+
+  const second = createSettings(a.file)
+  expect(second.carried('GLASSES-12C3EF')).toEqual({
+    remembered: true,
+    kind: 'crew',
+    version: 2,
+    capabilities: 9,
+    at: 1_700_000_000_000,
+  })
+  expect(second.carried('GLASSES-125B37')?.kind).toBe('stock')
+  expect(second.carried('GLASSES-NEVER-SEEN')).toBeNull()
+})
+
+test('forgetting a pair clears its answer rather than storing an empty one', () => {
+  const s = createSettings(memory().file)
+  s.setCarried('GLASSES-12C3EF', { kind: 'stock', version: 0, capabilities: 0, at: 1 })
+  s.setCarried('GLASSES-12C3EF', null)
+  expect(s.carried('GLASSES-12C3EF')).toBeNull()
+  // A nameless pair cannot own a record, the same rule setTheme keeps.
+  s.setCarried('', { kind: 'stock', version: 0, capabilities: 0, at: 1 })
+  expect(s.carried('')).toBeNull()
+})
+
+test('a malformed carried entry is dropped alone, never printed', () => {
+  const got = revive({
+    carried: {
+      'GLASSES-A': { kind: 'crew', version: 1, capabilities: 4, at: 10 },
+      'GLASSES-B': { kind: 'mystery', at: 10 },
+      'GLASSES-C': 'stock',
+      'GLASSES-D': { kind: 'stock', at: 'yesterday' },
+      '': { kind: 'stock', at: 10 },
+    },
+  })
+  expect([...got.carried.keys()]).toEqual(['GLASSES-A'])
+})
+
+test('a pair advertising as __proto__ gets its own carried entry too', () => {
+  const parsed = revive(
+    JSON.parse('{"carried":{"__proto__":{"kind":"crew","version":1,"capabilities":1,"at":9}}}'),
+  )
+  expect(parsed.carried.get('__proto__')?.version).toBe(1)
+  expect(parsed.carried.get('toString')).toBeUndefined()
+})

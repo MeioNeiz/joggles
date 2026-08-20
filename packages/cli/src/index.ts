@@ -9,6 +9,7 @@
  *   bun cli bench            measure the real frame rate
  *   bun cli off              blank the panel
  *   bun cli ledger           flash saves counted against each unit
+ *   bun cli patch status     what slot a crew unit is carrying, if any
  */
 import { Grid, budget, display, font, jgx, protocol as p } from '@joggles/core'
 import { type BroadcastOptions, broadcast, frameFor } from './broadcast.js'
@@ -260,10 +261,15 @@ try {
     case 'ledger':
       await cmdLedger()
       break
+    // Imported here rather than at the top of the file so the firmware-side modules
+    // load only when asked for: `patch check` needs no adapter and no Bluetooth.
+    case 'patch':
+      process.exit(await (await import('./patch.js')).runCli(rest))
     default:
       console.log(
         'usage: bun cli <probe|text|broadcast|edge|off|bench|stress|ledger> [args]',
       )
+      console.log('       bun cli patch <status|check|send|commit|abort> [args]')
       process.exit(1)
   }
   process.exit(0)

@@ -67,3 +67,21 @@ test('a query narrows what is offered and never what is sent', () => {
   const memo = src.slice(src.indexOf('const payload = useMemo'))
   expect(memo.slice(0, memo.indexOf('}, ['))).not.toMatch(/\b(query|yours|q)\b/)
 })
+
+test('the spray reaches the radio only through the one door, so it cannot mix sources', () => {
+  // Track 66 checked the spray for the bleed it fixed on the Glasses screen, because this
+  // is the feature where mistaking a simulated pair for a stranger's would matter: the
+  // consent policy is keyed on the advert name, and a spray is aimed at pairs nobody here
+  // owns. It cannot mix them, and the reason is structural rather than careful: both the
+  // scan and the open go through `ble.ts`'s `scanner`, which filters every advert to the
+  // active source and refuses a handle from the other one. A `BleScanner` of its own, or
+  // a `FakeScanner`, would each be a second door with none of that.
+  const src = code()
+  expect(src).toContain('scanner.scan(')
+  expect(src).toContain('scanner.connect(')
+  expect(src).not.toContain('new BleScanner')
+  expect(src).not.toContain('new FakeScanner')
+  // Not the import: `fake-glasses.test.ts` already crawls the whole package for that and
+  // asserts `ble.ts` is the only file allowed to name it. Naming the module path here
+  // would make this file an offender in that crawl, which is exactly the point of it.
+})

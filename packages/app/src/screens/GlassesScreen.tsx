@@ -14,11 +14,16 @@
  * button, and the wear count in `wearWords`'s honest wording with the save log behind
  * a tap.
  *
+ * **What the pair is carrying is printed here and worked out nowhere near here.** The
+ * shell probes once per connection and hands the answer down; every sentence comes out
+ * of `carried.ts` verbatim, the same arrangement as `ble-words.ts` and `deliver.ts`'s
+ * `costOf()`. This screen reads no version number and touches no capability bitmap, and
+ * `carried.test.ts` fails the build if it starts to.
+ *
  * Connecting applies the brightness default before handing the session up: it is the
  * one moment the setting can land without costing anyone a thought.
  */
-import { Glasses, type Discovered, protocol as p } from '@joggles/core'
-import type { Identity } from '@joggles/core'
+import { Glasses, protocol as p } from '@joggles/core'
 import { useEffect, useRef, useState } from 'react'
 import {
   ActivityIndicator,
@@ -30,7 +35,15 @@ import {
   View,
 } from 'react-native'
 import { pairWords } from '../ble-words.js'
-import { FAKE_AVAILABLE, scanner, useFakeGlasses } from '../ble.js'
+import { FAKE_AVAILABLE, scanner, useFakeGlasses, usingFakeGlasses } from '../ble.js'
+import {
+  type Carried,
+  beyondWords,
+  carriedLabel,
+  carriedWords,
+  refusedWords,
+  rememberedWords,
+} from '../carried.js'
 import { saveLog, wearWords } from '../ledger-shape.js'
 import { flashBudget } from '../ledger.js'
 import type { SavedItem } from '../library.js'
@@ -40,11 +53,13 @@ import { MAX_NICKNAME, nicknameIn } from '../nicknames.js'
 import { nicknames } from '../nicknames-store.js'
 import {
   type Nearby,
+  type NearUnit,
   type Presence,
   bandLine,
   createPresence,
   feed,
   headline,
+  rows as nearbyRows,
   signalText,
 } from '../proximity.js'
 import { settings } from '../settings-store.js'
@@ -70,6 +85,7 @@ export function GlassesScreen({
   glasses,
   items,
   resident,
+  carried,
   busy,
   liveWork,
   onOpen,
@@ -80,6 +96,8 @@ export function GlassesScreen({
   glasses: Glasses | null
   items: SavedItem[] | null
   resident: string | null
+  /** What the shell's probe answered for this pair, or null until it has. */
+  carried: Carried | null
   busy: boolean
   liveWork: boolean
   onOpen: (glasses: Glasses) => void
@@ -114,6 +132,7 @@ export function GlassesScreen({
       glasses={glasses}
       items={items}
       resident={resident}
+      carried={carried}
       busy={busy}
       liveWork={liveWork}
       onClose={onClose}
@@ -124,7 +143,17 @@ export function GlassesScreen({
   )
 }
 
-/** The scan half. Track 1's list, with the remembered pair connecting by itself. */
+/**
+ * The scan half. Track 1's list, with the remembered pair connecting by itself.
+ *
+ * **The rows are `near`, not a list beside it.** Track 66: this screen used to append
+ * every sighting to a `Discovered[]` that nothing ever emptied, so the header counted the
+ * pairs the current source was advertising while the rows accumulated every pair any
+ * source had ever advertised. Switching to the simulated pairs left the real unit on
+ * screen at a frozen -57 dBm, above a caption reading "simulated pairs only". Rows and
+ * count are one array now (`proximity.rows`), and `busy`/`editing` are keyed on the
+ * advert name because that is the identity everywhere else in this app.
+ */
 function Scan({
   onOpen,
   onSpray,
@@ -133,7 +162,6 @@ function Scan({
   onSpray: () => void
 }) {
   const theme = useTheme()
-  const [units, setUnits] = useState<Discovered[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [scanning, setScanning] = useState(true)
@@ -142,6 +170,13 @@ function Scan({
   const [editing, setEditing] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [near, setNear] = useState<Nearby>(NOTHING)
+  /**
+   * Which source the rows came from, asked of the scanner rather than remembered.
+   *
+   * Read at mount because this component is rebuilt on every disconnect and every visit
+   * to the tab, and the switch below is module state that outlives it.
+   */
+  const [simulated, setSimulated] = useState(usingFakeGlasses)
   const presence = useRef<Presence | null>(null)
   /** One automatic connect per mount: retrying a failed one would loop on a dead pair. */
   const reached = useRef(false)
@@ -152,8 +187,8 @@ function Scan({
     busyRef.current = busy
   }, [busy])
 
-  async function connect(unit: Discovered) {
-    setBusy(unit.id)
+  async function connect(unit: { id: string; name: string }) {
+    setBusy(unit.name)
     setError(null)
     try {
       const transport = await scanner.connect(unit.id)
@@ -180,11 +215,9 @@ function Scan({
     const stop = feed(scanner, tracker, {
       onSighting: (unit) => {
         if (!live) return
-        setUnits((prev) =>
-          prev.some((u) => u.id === unit.id)
-            ? prev.map((u) => (u.id === unit.id ? unit : u))
-            : [...prev, unit],
-        )
+        // No row is built here. `saw` has already folded this advert into `tracker`, and
+        // the tick below is what publishes it: a row is a member of that map.
+        //
         // The festival shortcut: the pair this phone last opened connects on sight.
         if (!reached.current && busyRef.current === null && unit.name === settings.lastPair()) {
           reached.current = true
@@ -224,18 +257,21 @@ function Scan({
     return () => clearInterval(tick)
   }, [scanning, round])
 
-  function beginRename(unit: Discovered) {
+  function beginRename(unit: NearUnit) {
     setDraft(nicknameIn(names, unit.name) ?? '')
-    setEditing(unit.id)
+    setEditing(unit.name)
   }
 
-  function commitRename(unit: Discovered) {
+  function commitRename(unit: NearUnit) {
     nicknames.set(unit.name, draft)
     setNames(nicknames.all())
     setEditing(null)
   }
 
   const bands = bandLine(near)
+  // The rows ARE the count, re-ordered. `listed.length === near.count` is arithmetic
+  // here, not a rule anyone has to keep.
+  const listed = nearbyRows(near)
 
   return (
     <ScrollView contentContainerStyle={styles.wrap}>
@@ -246,11 +282,18 @@ function Scan({
         <Text style={styles.count}>{headline(near, scanning)}</Text>
       </View>
       {bands ? <Fine>{bands}</Fine> : null}
+      {/* Beside the list it describes, not three screens below it: this sentence is the
+          only thing standing between a simulated render and someone quoting it as
+          evidence, and track 66 found it captioning a real pair from the bottom of the
+          page. What makes it true is `ble.ts`'s `onlyFrom`, not its placement. */}
+      {simulated ? (
+        <Fine>Simulated pairs only. Nothing here is evidence about the real panel.</Fine>
+      ) : null}
 
-      {units.map((unit) => {
-        if (editing === unit.id) {
+      {listed.map((unit) => {
+        if (editing === unit.name) {
           return (
-            <View key={unit.id} style={styles.unit}>
+            <View key={unit.name} style={styles.unit}>
               <TextInput
                 style={[styles.input, { borderBottomColor: theme.accent }]}
                 value={draft}
@@ -267,12 +310,13 @@ function Scan({
           )
         }
         const nick = nicknameIn(names, unit.name)
+        const handle = unit.id
         return (
           <Pressable
-            key={unit.id}
+            key={unit.name}
             style={styles.unit}
-            onPress={() => connect(unit)}
-            disabled={busy !== null}
+            onPress={() => handle !== null && void connect({ id: handle, name: unit.name })}
+            disabled={busy !== null || handle === null}
           >
             <View style={styles.label}>
               <Text style={styles.name} numberOfLines={1}>
@@ -286,7 +330,7 @@ function Scan({
             </View>
             <View style={styles.side}>
               <Text style={styles.rssi}>
-                {busy === unit.id ? 'connecting...' : signalText(unit.rssi)}
+                {busy === unit.name ? 'connecting...' : signalText(unit.rssi)}
               </Text>
               <Link
                 label={nick ? 'rename' : 'name'}
@@ -298,7 +342,7 @@ function Scan({
         )
       })}
 
-      {units.length === 0 && scanning && !error ? (
+      {listed.length === 0 && scanning && !error ? (
         <Fine>A pair held by another app will not appear: one connection per device.</Fine>
       ) : null}
 
@@ -306,7 +350,7 @@ function Scan({
 
       {!scanning ? (
         <FreeButton
-          label={units.length === 0 ? 'Nothing found. Scan again' : 'Scan again'}
+          label={listed.length === 0 ? 'Nothing found. Scan again' : 'Scan again'}
           onPress={() => setRound((n) => n + 1)}
         />
       ) : null}
@@ -318,7 +362,13 @@ function Scan({
         <Fine>One still picture, no flash, and one push per pair.</Fine>
       </View>
 
-      <SimulatedPair onChanged={() => setRound((n) => n + 1)} />
+      <SimulatedPair
+        on={simulated}
+        onChanged={(now) => {
+          setSimulated(now)
+          setRound((n) => n + 1)
+        }}
+      />
     </ScrollView>
   )
 }
@@ -331,25 +381,33 @@ function Scan({
  * would read as "my glasses might be fake", which is the worst possible thing for it
  * to suggest. `FAKE_AVAILABLE` is `__DEV__`, so the whole subtree is dead code the
  * bundler drops.
+ *
+ * **It holds no state of its own.** It used to hold `on`, and it is rebuilt on every
+ * disconnect and every visit to this tab while the switch itself is module state that
+ * outlives it, so one switch and one disconnect left the app on the simulated pairs with
+ * this control offering to turn them on. Track 66: the owner is `Scan`, which asks the
+ * scanner, and `useFakeGlasses` reports what actually happened rather than what was asked
+ * for - a release build answers false.
  */
-function SimulatedPair({ onChanged }: { onChanged: () => void }) {
-  const [on, setOn] = useState(false)
+function SimulatedPair({
+  on,
+  onChanged,
+}: {
+  on: boolean
+  onChanged: (simulated: boolean) => void
+}) {
   if (!FAKE_AVAILABLE) return null
   return (
     <View style={styles.dev}>
       <Fine>
         {on
-          ? 'Simulated pairs only. Nothing here is evidence about the real panel.'
+          ? 'The rows above are simulated pairs. Nothing here is evidence about the real panel.'
           : 'Dev build: drive the app with no hardware attached.'}
       </Fine>
       <Link
         label={on ? 'use real glasses' : 'use simulated glasses'}
         onPress={() => {
-          const next = !on
-          void useFakeGlasses(next).then((got) => {
-            setOn(got)
-            onChanged()
-          })
+          void useFakeGlasses(!on).then(onChanged)
         }}
       />
     </View>
@@ -361,6 +419,7 @@ function Connected({
   glasses,
   items,
   resident,
+  carried,
   busy,
   liveWork,
   onClose,
@@ -371,6 +430,7 @@ function Connected({
   glasses: Glasses
   items: SavedItem[] | null
   resident: string | null
+  carried: Carried | null
   busy: boolean
   liveWork: boolean
   /** Awaitable: the spray needs the pair actually let go before it takes the radio. */
@@ -380,28 +440,18 @@ function Connected({
   onSpray: () => void
 }) {
   const theme = useTheme()
-  const [identity, setIdentity] = useState<Identity | null>(null)
   const [level, setLevel] = useState(settings.defaults().brightness)
   const [ledger, setLedger] = useState<budget.DeviceLedger | null>(null)
   const [log, setLog] = useState(false)
   const [status, setStatus] = useState<Status | null>(null)
 
-  // Latched, not merely effect-scoped: probe() fired twice on the first hardware run
-  // under Fast Refresh, and the latch outside React's lifecycle is the shape that
-  // stops it (the same defect as a save in an effect, caught where it is cheap).
-  const probed = useRef<Glasses | null>(null)
-  useEffect(() => {
-    if (probed.current === glasses) return
-    probed.current = glasses
-    let alive = true
-    glasses
-      .probe()
-      .then((id) => alive && setIdentity(id))
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [glasses])
+  /**
+   * What this pair answered last time, read once at mount.
+   *
+   * Fills the line while the shell's probe is still out, so a reconnect at a festival
+   * is not a blank. It decides nothing: the type will not let it reach the gate.
+   */
+  const recalled = useRef(rememberedWords(settings.carried(glasses.name))).current
 
   useEffect(() => {
     let alive = true
@@ -416,6 +466,8 @@ function Connected({
 
   const nickname = nicknames.get(glasses.name)
   const holding = residentItem(items ?? [], resident)
+  const beyond = beyondWords(carried)
+  const refused = refusedWords(carried)
 
   async function light(n: number) {
     if (busy) return
@@ -449,15 +501,22 @@ function Connected({
             <Text style={styles.name}>{nickname ?? glasses.name}</Text>
             <Text style={styles.advert}>
               {nickname ? `${glasses.name} · ` : ''}
-              {identity === null
-                ? 'identifying...'
-                : identity.kind === 'crew'
-                  ? `crew firmware v${identity.version}`
-                  : 'stock firmware'}
+              {carriedLabel(carried)}
             </Text>
           </View>
           <Link label="Disconnect" onPress={onClose} disabled={busy} />
         </View>
+
+        {/* Every line below is `carried.ts` printed verbatim. A stock pair gets one
+            sentence, which exists to say that stock is the ordinary answer; a crew pair
+            gets that plus whatever it reports that this app has no control for, plus the
+            refusal if it says it can take firmware. Every pair we can meet today is
+            stock, so the other lines are unreachable rather than merely unseen - and the
+            stock one has not been rendered on a handset either. */}
+        <Fine>{carriedWords(carried)}</Fine>
+        {carried === null && recalled !== null ? <Fine>{recalled}</Fine> : null}
+        {beyond !== null ? <Fine>{beyond}</Fine> : null}
+        {refused !== null ? <Fine>{refused}</Fine> : null}
 
         {/* The pair's colour: the whole app wears it while this pair is connected. */}
         <View style={styles.swatches}>

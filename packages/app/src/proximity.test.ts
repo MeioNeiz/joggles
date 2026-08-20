@@ -25,6 +25,7 @@ import {
   feed,
   friendLine,
   headline,
+  rows,
   signalText,
 } from './proximity.js'
 
@@ -185,8 +186,11 @@ test('the advert is folded in before onSighting, so a summary taken there includ
 })
 
 test('every advert reaches onSighting unchanged, re-sightings included', () => {
-  // The scan list keeps its own model of the rows and needs the raw sighting to replace
-  // one in place. Deduplicating here would freeze its RSSI at whatever arrived first.
+  // *Corrected by track 66: this said the scan list keeps its own model of the rows and
+  // needs the raw sighting to replace one in place. That list was the defect. What still
+  // needs every advert is acting on an arrival - the Glasses screen opens the remembered
+  // pair on first sight - and deduplicating here would hide the second pair's arrival
+  // behind the first pair's re-sighting.*
   const scanner = new MockScanner()
   const got: Sighting[] = []
   feed(scanner, createPresence(), { onSighting: (unit) => got.push(unit) })
@@ -496,4 +500,115 @@ test('proximity.ts imports nothing at all, so there is nothing to reach through'
   // The type `feed` takes is what actually makes a connection unreachable; this only
   // stops the type being widened quietly.
   expect(CODE).toContain('AdvertSource')
+})
+
+/**
+ * The rows are the count, asserted as arithmetic rather than as agreement.
+ *
+ * Track 66. The Glasses screen kept its own array of sightings beside this map, so the
+ * header counted one thing and the list showed another, and switching the app to the
+ * simulated pairs left a real pair on screen at a frozen reading under a caption reading
+ * "simulated pairs only". `rows()` is a re-ordering of `nearby().units` and never a
+ * filter, which is the property these tests pin.
+ */
+test('the rows are exactly the counted pairs, whatever has been heard', () => {
+  const presence = createPresence({ freshMs: 12_000 })
+  presence.saw(seen('GLASSES-125B37', -55), 0)
+  presence.saw(seen('GLASSES-12C3EF', -72), 1_000)
+  presence.saw(seen('JOGGLES-1A2B3C', -91), 2_000)
+
+  const near = presence.nearby(3_000)
+  expect(rows(near)).toHaveLength(near.count)
+  expect([...rows(near)].map((u) => u.name).sort()).toEqual(
+    [...near.units].map((u) => u.name).sort(),
+  )
+
+  // And past the window, where the old list would still have had three rows.
+  const gone = presence.nearby(20_000)
+  expect(gone.count).toBe(0)
+  expect(rows(gone)).toHaveLength(0)
+})
+
+test('a pair that stops advertising loses its row at the same edge it loses the count', () => {
+  // The visible half of the freshness window. Before track 66 the row outlived the round
+  // that found it, which is what made a stale reading look like a current one.
+  const presence = createPresence({ freshMs: 12_000 })
+  presence.saw(seen('GLASSES-125B37', -55), 0)
+  presence.saw(seen('GLASSES-12C3EF', -60), 0)
+  presence.saw(seen('GLASSES-12C3EF', -60), 10_000)
+
+  const near = presence.nearby(12_001)
+  expect(near.count).toBe(1)
+  expect(rows(near).map((u) => u.name)).toEqual(['GLASSES-12C3EF'])
+})
+
+test('rows hold still while signals cross over, because they are ordered by arrival', () => {
+  // review-10's defect, which is what a signal-ordered list of tappable rows would be:
+  // a real reading jitters ~10 dB between adverts from a pair that has not moved, so the
+  // top two rows would swap about once a second and a tap would land on the wrong pair.
+  const presence = createPresence({ smoothing: 1 })
+  presence.saw(seen('GLASSES-FIRST', -70), 0)
+  presence.saw(seen('GLASSES-SECOND', -45), 1_000)
+
+  const order = (at: number) => rows(presence.nearby(at)).map((u) => u.name)
+  expect(order(1_000)).toEqual(['GLASSES-FIRST', 'GLASSES-SECOND'])
+  // The second pair is the stronger one, so `nearby()` ranks it first. The rows do not.
+  expect(presence.nearby(1_000).units[0].name).toBe('GLASSES-SECOND')
+
+  // Now invert the readings. The ranking flips; the rows must not.
+  presence.saw(seen('GLASSES-FIRST', -40), 2_000)
+  presence.saw(seen('GLASSES-SECOND', -85), 2_000)
+  expect(presence.nearby(2_000).units[0].name).toBe('GLASSES-FIRST')
+  expect(order(2_000)).toEqual(['GLASSES-FIRST', 'GLASSES-SECOND'])
+})
+
+test('a pair that left and came back is a new arrival, and goes to the end', () => {
+  const presence = createPresence({ freshMs: 12_000 })
+  presence.saw(seen('GLASSES-EARLY', -55), 0)
+  presence.saw(seen('GLASSES-LATER', -55), 1_000)
+  // EARLY falls out of the window, then returns.
+  presence.saw(seen('GLASSES-LATER', -55), 14_000)
+  presence.saw(seen('GLASSES-EARLY', -55), 15_000)
+
+  expect(rows(presence.nearby(15_000)).map((u) => u.name)).toEqual([
+    'GLASSES-LATER',
+    'GLASSES-EARLY',
+  ])
+})
+
+test('the handle rides along so a row can be opened, latest sighting winning', () => {
+  const presence = createPresence()
+  presence.saw(seen('GLASSES-125B37', -60, 'handle-a'), 0)
+  presence.saw(seen('GLASSES-125B37', -60, 'handle-b'), 1_000)
+
+  // One pair, one row, one count, and the freshest handle: a handle is per host and can
+  // be reissued between rounds, so the stale one is the one that would fail to open.
+  const near = presence.nearby(1_000)
+  expect(near.count).toBe(1)
+  expect(rows(near)).toHaveLength(1)
+  expect(rows(near)[0].id).toBe('handle-b')
+})
+
+test('an advert with no handle still counts, and its row says it has none', () => {
+  // `Sighting.id` is optional because the count never needed it. A row without one is
+  // not openable, which the screen shows by disabling the row rather than by dropping
+  // it - dropping it is what would let the rows and the count disagree again.
+  const presence = createPresence()
+  presence.saw({ name: 'GLASSES-125B37', rssi: -60 }, 0)
+  const near = presence.nearby(0)
+  expect(near.count).toBe(1)
+  expect(rows(near)[0].id).toBeNull()
+})
+
+test('a handle already known is kept when a later advert carries none', () => {
+  const presence = createPresence()
+  presence.saw(seen('GLASSES-125B37', -60, 'handle-a'), 0)
+  presence.saw({ name: 'GLASSES-125B37', rssi: -60 }, 1_000)
+  expect(rows(presence.nearby(1_000))[0].id).toBe('handle-a')
+})
+
+test('a row with no believable reading prints no dBm rather than a zero', () => {
+  // `signalText` takes the null a row carries as well as a raw sample, so a caller
+  // cannot forget to branch and print `0 dBm` for a pair it cannot hear.
+  expect(signalText(null)).toBe('no reading')
 })

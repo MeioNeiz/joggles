@@ -56,8 +56,10 @@
  * writes the MAC suffix at a fixed `name + 8` and a short prefix would make every crew
  * unit advertise the same string, which would collapse this count to 1.
  *
- * The scan list keys its rows on `Discovered.id`, so the two can disagree: two rows, one
- * pair. That is the honest direction to be wrong in for a count.
+ * *Corrected by track 66: this said the scan list keys its rows on `Discovered.id`, so
+ * the two can disagree at two rows for one pair, and called that the honest direction to
+ * be wrong in. The list keyed on the handle is gone; rows come off this map, so one pair
+ * is one row for the same reason it is one count.*
  *
  * ## RSSI is a hint, and 0 is not a strong signal
  *
@@ -91,12 +93,40 @@
  * and publishes on a tick, so a festival's worth of adverts costs one map write each and
  * cannot reorder the scan rows - review-10's defect, which this feature is otherwise in a
  * good position to reintroduce.
+ *
+ * ## The scan rows are this map, not a second list beside it
+ *
+ * Added by track 66, which is what a second list cost. The Glasses screen used to keep
+ * its own array of sightings and append to it, so the rows and the count were two views
+ * of one field updated by two different rules: the count came off this map, which expires
+ * a pair after `FRESH_MS` and is rebuilt per round, and the rows came off an array nothing
+ * ever emptied. Switching the app to the simulated pairs therefore left the real pair on
+ * screen with its last reading frozen, under a header that counted two and a footer that
+ * said "simulated pairs only".
+ *
+ * So a row is now one entry of this map and the count is that map's size. They cannot
+ * disagree, because there is nothing to disagree with. Two consequences worth knowing:
+ *
+ *  - **A pair that stops advertising loses its row**, at the same window edge that drops
+ *    it from the count, rather than sitting there for the rest of the round. That is the
+ *    same freshness rule the count has always had, now visible.
+ *  - **The platform handle rides along**, because a row has to be openable and only the
+ *    handle can do that. It is still never shown: `ble-words.ts`. The name stays the
+ *    identity, so two handles for one pair are still one row and one count.
  */
 
 /** What one advert tells us. Core's `Discovered` satisfies it. */
 export interface Sighting {
   name: string
   rssi: number
+  /**
+   * The platform's handle for whatever sent this advert, if the caller has one.
+   *
+   * Optional because nothing here needs it: the key is the advert name, and the count
+   * would be wrong if it were not. It is carried so that a row can be a projection of
+   * this map. See "The scan rows are this map" above.
+   */
+  id?: string
 }
 
 export type Band = 'reach' | 'room' | 'far' | 'unknown'
@@ -109,6 +139,10 @@ export interface NearUnit {
   band: Band
   /** Milliseconds since the last advert, at the moment asked. Never negative. */
   age: number
+  /** Latest handle heard for this pair, or null when no sighting carried one. */
+  id: string | null
+  /** When this pair entered the window. `rows()` orders by it so rows hold still. */
+  firstSeen: number
 }
 
 export interface Nearby {
@@ -146,9 +180,14 @@ export function bandOf(rssi: number | null): Band {
   return 'far'
 }
 
-/** One unit's signal for a row: the number, or the honest absence of one. */
-export function signalText(rssi: number): string {
-  return usable(rssi) ? `${Math.round(rssi)} dBm` : 'no reading'
+/**
+ * One unit's signal for a row: the number, or the honest absence of one.
+ *
+ * Takes the null a `NearUnit` carries as well as the raw sample, because both mean the
+ * same nothing to a reader and a caller that had to branch would eventually print `0`.
+ */
+export function signalText(rssi: number | null): string {
+  return rssi !== null && usable(rssi) ? `${Math.round(rssi)} dBm` : 'no reading'
 }
 
 export interface Presence {
@@ -176,9 +215,13 @@ export function createPresence(opts: PresenceOptions = {}): Presence {
    * `__proto__` writes the prototype instead of an entry. A `Map` cannot do either.
    *
    * `read` is when the last believable reading arrived and is not `seen`: an advert with
-   * no usable RSSI in it moves `seen` and leaves `read` where it was.
+   * no usable RSSI in it moves `seen` and leaves `read` where it was. `first` is when the
+   * pair entered the window and is what rows are ordered by.
    */
-  const held = new Map<string, { seen: number; read: number; rssi: number | null }>()
+  const held = new Map<
+    string,
+    { seen: number; read: number; first: number; rssi: number | null; id: string | null }
+  >()
 
   /**
    * Drop what can never be fresh again, so the map is bounded by the units actually
@@ -206,7 +249,17 @@ export function createPresence(opts: PresenceOptions = {}): Presence {
           // zero, which is where the `?? 0` in ble.ts would send it. It does not renew
           // `read` either, or a run of them would preserve a band for ever.
           (prev?.rssi ?? null)
-      held.set(unit.name, { seen: at, read: believable ? at : (prev?.read ?? at), rssi })
+      held.set(unit.name, {
+        seen: at,
+        read: believable ? at : (prev?.read ?? at),
+        // A pruned pair coming back is a new arrival and goes to the end of the rows,
+        // which is honest: it left.
+        first: prev?.first ?? at,
+        rssi,
+        // Latest wins. A handle is per host and can be reissued between rounds, so the
+        // freshest one is the only one worth keeping.
+        id: unit.id ?? prev?.id ?? null,
+      })
       prune(at)
     },
 
@@ -227,7 +280,7 @@ export function createPresence(opts: PresenceOptions = {}): Presence {
         const rssi = unit.rssi === null || stale ? null : Math.round(unit.rssi)
         const band = bandOf(rssi)
         bands[band] += 1
-        units.push({ name, rssi, band, age })
+        units.push({ name, rssi, band, age, id: unit.id, firstSeen: unit.first })
       }
       const strength = (u: NearUnit) => u.rssi ?? NO_READING
       units.sort((a, b) => strength(b) - strength(a) || (a.name < b.name ? -1 : 1))
@@ -252,7 +305,14 @@ export interface AdvertSource<S extends Sighting = Sighting> {
 }
 
 export interface FeedOptions<S extends Sighting> {
-  /** Every advert, unchanged, for the caller's own list. Called after `saw`. */
+  /**
+   * Every advert, unchanged, called after `saw`.
+   *
+   * Not for building a list: rows are `rows(nearby(now))`, and an array assembled here
+   * is the second view of one field that track 66 removed. What it is for is acting on
+   * the *arrival* of one advert, which a summary cannot express - the Glasses screen
+   * opens the remembered pair on first sight from here.
+   */
   onSighting?: (unit: S) => void
   /** A scan that never started: permission refused, adapter off. */
   onError?: (e: Error) => void
@@ -298,6 +358,24 @@ export function feed<S extends Sighting>(
 }
 
 /**
+ * The same pairs, in the order they turned up, for a list of rows.
+ *
+ * `nearby()` sorts by signal, which is what a count wants read out. A list of rows wants
+ * the opposite: a real reading jitters by around 10 dB between adverts from a pair that
+ * has not moved, so a signal-ordered list swaps rows about once a second and a tap lands
+ * on whichever pair arrived there first - review-10's defect, in a feature that had
+ * carefully avoided reintroducing it.
+ *
+ * Same members either way. This is a re-ordering of `near.units` and never a filter, so
+ * `rows(near).length === near.count` is not a rule anyone has to keep, it is arithmetic.
+ */
+export function rows(near: Nearby): readonly NearUnit[] {
+  return [...near.units].sort(
+    (a, b) => a.firstSeen - b.firstSeen || (a.name < b.name ? -1 : 1),
+  )
+}
+
+/**
  * The count as a sentence.
  *
  * `live` false is the frozen case: the scan has ended, so the number is what was around
@@ -307,10 +385,15 @@ export function feed<S extends Sighting>(
  */
 export function headline(near: Nearby, live = true): string {
   if (near.count === 0) {
-    // Not "No pairs heard" for the frozen case: a pair heard early and then switched off
-    // leaves its row on screen, and a headline denying it was ever heard contradicts the
-    // row underneath it. What is true either way is that nothing was advertising at the
-    // end, and the empty case has "Nothing found. Scan again" to say the rest.
+    // Not "No pairs heard" for the frozen case: one may well have been heard early and
+    // then gone, and denying it was ever there is a different claim from saying nothing
+    // was advertising at the end. The empty case has "Nothing found. Scan again" to say
+    // the rest.
+    //
+    // *Corrected by track 66: this said the row of a pair switched off mid-round stays on
+    // screen, so a headline denying it would contradict the row underneath. Rows are a
+    // projection of the same window now, so that pair loses its row at the same moment it
+    // leaves the count and there is no row left to contradict.*
     return live ? 'Listening for pairs nearby' : 'Nothing advertising when the scan ended'
   }
   const pairs = near.count === 1 ? '1 pair' : `${near.count} pairs`

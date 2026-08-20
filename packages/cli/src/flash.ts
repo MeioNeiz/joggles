@@ -6,6 +6,9 @@
  *   bun run flash stage <image> [--limit n] stream data, never commit
  *   bun run flash commit <image> --yes      stage, then commit. This one writes flash
  *
+ * `commit` is barred outright and reading the LDROM did not lift it: `commitBar()`
+ * below says why, and `firmware-doors.test.ts` fails the build if the bar goes.
+ *
  * The three subcommands are the first four steps of "Safe procedure" in
  * `research/firmware-flashing.md`, in order and least committal first. `info` and
  * `stage` cannot damage a device: nothing is committed until the `03` control write,
@@ -24,8 +27,10 @@
  * image supplied so the patch checks run too. It is what refuses type 2, oversized
  * images, an image linked for the wrong base, the other hardware variant, and any
  * edit inside the regions that make a bad flash recoverable. This file adds only the
- * things a static check cannot see: an explicit `--yes` for the committing step, and
- * a refusal to commit an image whose transfer did not complete.
+ * things a static check cannot see: an explicit `--yes` for the committing step, a
+ * refusal to commit an image whose transfer did not complete, and `forCommit`, which
+ * makes the dump of the target unit mandatory on the committing path rather than a
+ * warning nobody reads.
  */
 import { protocol as p } from '@joggles/core'
 // Not the main barrel: reaching fd00 is an explicit import. See core/src/firmware.ts.
@@ -41,7 +46,7 @@ const matches = (c: any, uuid: string) => c.uuid === flat(uuid) || c.uuid === sh
 
 // --- Argument parsing ---------------------------------------------------------------
 
-const TAKES_VALUE = new Set(['limit', 'packet', 'stock', 'timeout'])
+const TAKES_VALUE = new Set(['limit', 'packet', 'reference', 'stock', 'timeout'])
 const flags = new Set<string>()
 const values = new Map<string, string>()
 const positional: string[] = []
@@ -65,6 +70,8 @@ if (!cmd || !['info', 'stage', 'commit'].includes(cmd)) {
   console.error('usage: bun run flash <info|stage|commit> [image] [flags]')
   console.error('  stage <image> [--limit n]   stream data without committing')
   console.error('  commit <image> --yes        stage and commit. Writes flash')
+  console.error('  --reference <dump.bin>      SWD dump of the target unit. Required')
+  console.error('                              to commit; see ota.check opts.reference')
   process.exit(2)
 }
 if (cmd !== 'info' && !imagePath) {
@@ -80,6 +87,13 @@ if (cmd !== 'info' && !imagePath) {
  * The stock image is passed whenever it is present, because without it the patch
  * checks are silently skipped and those are the ones that stop us flashing away our
  * own way back.
+ *
+ * `--reference` is the other half, and it is the half 2026-08-08 did not have: a raw
+ * SWD dump of the unit being flashed, which is the only thing that can say whether
+ * this image is the application that unit's BLE stack expects. Optional for `stage`,
+ * because staging is scratch and an image is often looked at before a dump exists.
+ * Never optional for `commit`: `forCommit` turns the missing-dump warning fatal, so
+ * there is no route to the wire that skips it.
  */
 async function checked(path: string): Promise<{ file: Uint8Array; header: ota.Header }> {
   const file = new Uint8Array(await Bun.file(path).arrayBuffer())
@@ -89,12 +103,17 @@ async function checked(path: string): Promise<{ file: Uint8Array; header: ota.He
     (await Bun.file(stockPath).exists()) && !sameFile
       ? new Uint8Array(await Bun.file(stockPath).arrayBuffer())
       : undefined
+  const refPath = values.get('reference')
+  const reference = refPath
+    ? new Uint8Array(await Bun.file(refPath).arrayBuffer())
+    : undefined
 
   console.log(`image  ${path}`)
   if (sameFile) console.log('stock  this IS the stock image; there is nothing to diff')
   else console.log(stock ? `stock  ${stockPath}` : 'stock  NOT FOUND, patch checks skipped')
+  console.log(reference ? `dump   ${refPath}` : 'dump   none, silicon checks skipped')
   console.log()
-  const verdict = ota.check(file, { stock })
+  const verdict = ota.check(file, { stock, reference, forCommit: cmd === 'commit' })
   console.log(ota.report(verdict))
   console.log()
   if (!verdict.safe) {
@@ -228,28 +247,43 @@ class Dfu {
 
 const pct = (n: number, total: number) => `${Math.floor((n * 100) / total)}%`
 
+/**
+ * The commit bar, and why reading the LDROM did not lift it.
+ *
+ * A stock-over-stock commit bricked `GLASSES-12C3EF` on 2026-08-08. The flag was
+ * named after the evidence that was missing at the time, and **that evidence has
+ * since been gathered and the answer is still no**: track 48 dumped the LDROM on
+ * 2026-08-19 and disassembled it, so the flag's literal condition is met and its
+ * purpose is not. Printed before anything reads a file, so nobody gets as far as a
+ * `PASS` line and reads it as permission.
+ */
+function commitBar(): number {
+  console.error('REFUSED: commit is barred, and reading the LDROM did not lift it.\n')
+  console.error('It bricked GLASSES-12C3EF on 2026-08-08 flashing the STOCK image over')
+  console.error('itself. Staging was fine and the device verified its own CRC; it reset')
+  console.error('and never came back.\n')
+  console.error('The LDROM was dumped and disassembled on 2026-08-19. The bootloader is')
+  console.error('real and competent, and that is the problem: it copies over the running')
+  console.error('application BEFORE it validates, with no rollback, and it has no')
+  console.error('recovery transport at all. No UART receive, no button, no radio. So an')
+  console.error('image that fails to bring up BLE is unreachable except over SWD.')
+  console.error('research/ldrom-2026-08-19.md, "The answer on --ldrom-verified is no".\n')
+  console.error('Nothing available lifts this. --ldrom-verified is not a box to tick:')
+  console.error('SWD is the delivery route, it is proven, and it can undo a mistake.\n')
+  console.error('`stage` is unaffected and still safe: it commits nothing.')
+  return 2
+}
+
 async function main(): Promise<number> {
   const timeout = num('timeout', 20000)
   const packetOverride = values.has('packet') ? num('packet', 20) : undefined
+
+  if (cmd === 'commit' && !flags.has('ldrom-verified')) return commitBar()
 
   // Everything that can be decided without touching Bluetooth is decided first, so a
   // bad invocation never reaches a connected device.
   const image = cmd === 'info' ? null : await checked(imagePath!)
 
-  // A stock-over-stock commit bricked GLASSES-12C3EF on 2026-08-08. The image could not
-  // have been at fault; the handoff into LDROM is. Until someone has dumped the LDROM
-  // over SWD and seen a bootloader in it, this path is known to destroy units, so it
-  // takes a claim about evidence rather than a nerve-steeling --yes.
-  if (cmd === 'commit' && !flags.has('ldrom-verified')) {
-    console.error('REFUSED: commit is barred. It bricked GLASSES-12C3EF on 2026-08-08,')
-    console.error('flashing the STOCK image over itself. Staging was fine and the device')
-    console.error("verified its own CRC; it reset and never came back.\n")
-    console.error('Read research/brick-2026-08-08.md before going further. The bar to lift')
-    console.error('this is dumping the LDROM over SWD and confirming a bootloader is there')
-    console.error('that restores CBS. Then pass --ldrom-verified --yes.\n')
-    console.error('`stage` is unaffected and still safe: it commits nothing.')
-    return 2
-  }
   if (cmd === 'commit' && !flags.has('yes')) {
     console.error('commit writes flash and reboots the device. Re-run with --yes.')
     console.error('Charge the unit first: the window after the CRC has no protection.')

@@ -35,14 +35,18 @@ test('a command mid-save lands inside the DATS handshake, which is why busy gate
   expect(t.to(p.CHAR_COMMAND).map(opcodeOf)).toEqual(['DATS', 'LIGHT', 'DATCP'])
 })
 
-test('probe() on a dead link rejects rather than answering, so the screen must catch', async () => {
+test('probe() on a dead link rejects rather than answering, so the shell must catch', async () => {
   const t = new MockTransport()
   const g = await attach(t)
   t.write = () => Promise.reject(new Error('device disconnected'))
 
   // Silence is probe()'s answer for a stock unit, but a failed WRITE is a
   // rejection: with a bare .then() in the mount effect that is an unhandled
-  // rejection every time a link drops before the screen settles.
+  // rejection every time a link drops before the answer lands.
+  //
+  // *The catch moved 2026-08-20 (track 63): the probe is the shell's now, not this
+  // screen's, and `carried.test.ts` asserts both that App.tsx is the only prober and
+  // that its probe is caught.*
   await expect(g.probe()).rejects.toThrow('device disconnected')
 })
 
@@ -116,4 +120,79 @@ test('the brightness default is applied on connect, not merely stored', () => {
     'utf8',
   ).replace(/\/\*[\s\S]*?\*\//g, '')
   expect(src).toMatch(/brightness\(settings\.defaults\(\)\.brightness\)/)
+})
+
+/**
+ * The Scan half may not keep a second model of the rows.
+ *
+ * Track 66's rule-enforcing half, and it is a crawl for the same reason the rest of this
+ * file is: react-native does not import under bun, so what the screen renders is checked
+ * on the handset and what it must never be built out of is checked here.
+ *
+ * The defect it prevents: this screen appended every sighting to a `Discovered[]` that
+ * nothing emptied, so the header counted the pairs the active source was advertising while
+ * the list held every pair any source ever had. Switching to the simulated pairs left the
+ * real unit on screen at a frozen -57 dBm under a caption reading "simulated pairs only" -
+ * the same wrong-provenance claim `notes/hardware-state.md` exists to stop, in a nicer
+ * font. One array is the fix; this is what keeps it one.
+ */
+const scanHalf = (): string => {
+  const src = readFileSync(
+    resolve(dirname(new URL(import.meta.url).pathname), 'GlassesScreen.tsx'),
+    'utf8',
+  ).replace(/\/\*[\s\S]*?\*\//g, '')
+  // Only the scan half: the connected half legitimately holds plenty of its own state.
+  const from = src.indexOf('function Scan(')
+  const to = src.indexOf('function Connected(')
+  expect(from).toBeGreaterThan(0)
+  expect(to).toBeGreaterThan(from)
+  return src.slice(from, to)
+}
+
+test('the scan rows come off the presence, not a list the screen keeps beside it', () => {
+  const scan = scanHalf()
+  // No second model of the field. `Discovered[]` was the shape of the one that bled.
+  expect(scan).not.toMatch(/useState<Discovered\[\]>/)
+  expect(scan).not.toMatch(/setUnits/)
+  // And the rows are the counted pairs, re-ordered: same array, so they cannot disagree.
+  // Aliased at the import, because `Connected` declares its own `rows` for the save log
+  // and an unaliased import of the same name would resolve there if that local ever went.
+  expect(scan).toContain('nearbyRows(near)')
+  expect(scan).toMatch(/listed\.map\(/)
+  expect(scan).toMatch(/headline\(near, scanning\)/)
+  // The empty state and the button label have to read off the same list too, or the
+  // screen can say "Nothing found" above a row.
+  expect(scan).not.toMatch(/units\.length/)
+  expect(scan).toMatch(/listed\.length === 0/)
+})
+
+test('a row is keyed on the advert name, which is the identity everywhere else', () => {
+  // Keyed on the platform handle, one pair reissued a handle between rounds was two
+  // rows; and the handle is a MAC on Android, so it must not be a React key either.
+  const scan = scanHalf()
+  expect(scan).toContain('key={unit.name}')
+  expect(scan).not.toContain('key={unit.id}')
+  expect(scan).toMatch(/editing === unit\.name/)
+  expect(scan).toMatch(/busy === unit\.name/)
+})
+
+test('the simulated caption is told which source the rows came from, never its own guess', () => {
+  // `SimulatedPair` remounts on every disconnect and every visit to this tab, while the
+  // switch it drives is module state that outlives it. Holding `on` itself meant that one
+  // switch plus one disconnect showed two simulated pairs under "Dev build: drive the app
+  // with no hardware attached", offering to turn on what was already on.
+  const src = readFileSync(
+    resolve(dirname(new URL(import.meta.url).pathname), 'GlassesScreen.tsx'),
+    'utf8',
+  ).replace(/\/\*[\s\S]*?\*\//g, '')
+  const from = src.indexOf('function SimulatedPair(')
+  const to = src.indexOf('function Connected(')
+  expect(from).toBeGreaterThan(0)
+  expect(to).toBeGreaterThan(from)
+  expect(src.slice(from, to)).not.toMatch(/useState/)
+  // The owner asks the scanner rather than assuming, and asks at mount.
+  expect(scanHalf()).toContain('useState(usingFakeGlasses)')
+  // The sentence that stops a simulated render being quoted as evidence sits with the
+  // rows it describes, and is shown only when the rows really are simulated.
+  expect(scanHalf()).toMatch(/simulated \?[\s\S]{0,200}Nothing here is evidence about the real panel/)
 })

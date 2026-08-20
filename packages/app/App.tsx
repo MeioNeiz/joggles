@@ -16,6 +16,10 @@
  *  - **What the panel is showing.** `live` means unsaved live work a `MODE` would
  *    discard; `resident` is the type 1 hash this pair last acknowledged. Screens
  *    unmount on every tab change, so neither fact can live in one.
+ *  - **What the pair is carrying**, from one `Glasses.probe()` per connection. Same
+ *    reason as the two above and one more: a screen that re-probed on every mount
+ *    would make a capability come and go under someone's thumb. `carried.ts` is the
+ *    gate and the wording; this file is the only prober in the app.
  *  - **The library items**, read once and refreshed on change, because all three tabs
  *    show them and a per-screen read is how a delete gets undone by a stale list.
  *  - **The tap runner.** Screens plan taps (`one-tap.planTap`) and show the plan; only
@@ -32,6 +36,7 @@ import { BackHandler, StyleSheet, View } from 'react-native'
 import { FramePlayer } from './src/anim-player.js'
 import type * as animations from './src/animations.js'
 import { pairWords } from './src/ble-words.js'
+import { type Carried, fromIdentity } from './src/carried.js'
 import type { SavedItem } from './src/library.js'
 import { library } from './src/library-store.js'
 import { nicknames } from './src/nicknames-store.js'
@@ -69,6 +74,8 @@ export default function App() {
   const [wire, setWire] = useState(false)
   /** The type 1 hash this pair last acknowledged, or null. Per pair, off its ledger. */
   const [resident, setResident] = useState<string | null>(null)
+  /** What this pair answered when asked. Null until it has, which gates as "no". */
+  const [carried, setCarried] = useState<Carried | null>(null)
   const [items, setItems] = useState<SavedItem[] | null>(null)
   const [libTrouble, setLibTrouble] = useState<string | null>(null)
   /** A library item handed to Create for editing. Cleared once Create takes it. */
@@ -154,6 +161,51 @@ export default function App() {
 
   useEffect(refreshItems, [refreshItems])
 
+  /**
+   * Ask the pair what firmware it carries, once per connection.
+   *
+   * **Silence is the answer**, not a failure: a stock unit has no match for our opcode
+   * and sends nothing, so `probe()` times out and reports `stock`. Nothing about that
+   * reaches a person as an error, which is the rule `carried.ts` owns the wording for.
+   * A link that drops mid-probe rejects instead, and is swallowed here: `carried` stays
+   * null, every gate reads "no", and the dropped link surfaces where it always did, on
+   * the next thing the person taps.
+   *
+   * Latched outside React's lifecycle because `probe()` fired twice under Fast Refresh
+   * on the first hardware run - the same defect shape as a save in an effect, caught
+   * where it is cheap.
+   *
+   * It does not raise `wire`, and it does not need to. The one frame it writes goes out
+   * as the connection is handed up, before any tap is possible, so it cannot land inside
+   * a `DATS` handshake the way `glasses-screen.test.ts` shows a stray command can. What
+   * outlasts the write is only the wait for a reply, which sends nothing - and gating
+   * the tab bar for a second and a half on every connect would cost more than it buys.
+   */
+  const probed = useRef<Glasses | null>(null)
+  useEffect(() => {
+    const g = glasses
+    if (g === null) {
+      probed.current = null
+      return
+    }
+    if (probed.current === g) return
+    probed.current = g
+    let alive = true
+    g.probe()
+      .then((id) => {
+        if (!alive) return
+        const got = fromIdentity(id)
+        setCarried(got)
+        // Keyed on the advert name, the key the ledger, the nicknames and the themes
+        // all use. Never the platform handle: `ble-words.ts` says why.
+        settings.setCarried(g.name, got)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [glasses])
+
   const refreshResident = useCallback(async (g: Glasses | null) => {
     if (g === null) {
       setResident(null)
@@ -174,6 +226,9 @@ export default function App() {
     })
     setGlasses(g)
     setLive(false)
+    // Cleared rather than carried over: the answer belongs to the connection, and the
+    // probe effect below fills it in again for this pair.
+    setCarried(null)
     settings.setLastPair(g.name)
     setPrefsAt((n) => n + 1)
     void refreshResident(g)
@@ -193,6 +248,7 @@ export default function App() {
     setGlasses(null)
     setLive(false)
     setResident(null)
+    setCarried(null)
     setShowing(null)
     await s?.end().catch(() => {})
     // 'keep' leaves the panel alone: leaving DIY would restore the vendor's saved
@@ -325,6 +381,20 @@ export default function App() {
       setLive(out.step.kind === 'live')
       setShowing(null)
       await refreshResident(g)
+      // A commit the device did not acknowledge sends no `MODE`, so the panel keeps
+      // whatever it was showing. Saying "On the glasses" there is the same claim
+      // `runTap` stopped making: the erases were spent and nothing arrived.
+      if (!out.showing) {
+        const spent = out.cost === 'save'
+        const reply = out.save?.reply ?? 'nothing'
+        return {
+          showing: false,
+          spent,
+          message: spent
+            ? `The glasses replied ${reply}, so nothing changed on the panel.`
+            : reply,
+        }
+      }
       return {
         showing: true,
         spent: out.cost === 'save',
@@ -431,6 +501,7 @@ export default function App() {
           glasses={glasses}
           items={items}
           resident={resident}
+          carried={carried}
           busy={wire}
           liveWork={live}
           onOpen={open}

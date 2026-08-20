@@ -24,7 +24,13 @@ import type { Discovered, Scanner, Transport } from '@joggles/core'
 import { PermissionsAndroid, Platform } from 'react-native'
 import { BleManager, type Device, type Subscription } from 'react-native-ble-plx'
 import { fromBase64, toBase64 } from './base64.js'
-import { FAKE_AVAILABLE, FakeScanner } from './fake-glasses.js'
+import {
+  FAKE_AVAILABLE,
+  FakeScanner,
+  isFakeHandle,
+  onlyFrom,
+  wrongSourceWords,
+} from './fake-glasses.js'
 
 /**
  * Ask for what Android 12+ actually needs.
@@ -253,16 +259,39 @@ class ActiveScanner implements Scanner {
     return this.simulated
   }
 
+  /**
+   * One source's adverts and only one source's.
+   *
+   * `onlyFrom` is what makes "simulated pairs only" a fact rather than a caption. A
+   * scan callback queued by the platform before `useFake` stopped it arrives after the
+   * flip, and without this it joins the new source's list: track 66 found a real pair
+   * sitting in the simulated list with its last reading frozen, counted by neither the
+   * header nor the footer. Applied here because this is the only place that knows which
+   * source is active, and so the three consumers cannot each get it half right.
+   */
   scan(onFound: (unit: Discovered) => void, tuning: ScanTuning = {}): Promise<void> {
     const at = this.active()
-    return at instanceof BleScanner ? at.scan(onFound, tuning) : at.scan(onFound)
+    const mine = onlyFrom(this.simulated, onFound)
+    return at instanceof BleScanner ? at.scan(mine, tuning) : at.scan(mine)
   }
 
   stop(): Promise<void> {
     return this.active().stop()
   }
 
+  /**
+   * Refuse a handle from the source the app is not on.
+   *
+   * The row list cannot hold one any more, so this is the second layer rather than the
+   * fix. It is worth having because of what the tap would otherwise be: in simulated
+   * mode a real handle reaches the radio if this class ever routes by anything other
+   * than `faking`, and "the app opened the real pair while every word on the screen said
+   * simulated" is the one outcome here that is worse than a wrong list.
+   */
   connect(id: string): Promise<Transport> {
+    if (isFakeHandle(id) !== this.simulated) {
+      return Promise.reject(new Error(wrongSourceWords(this.simulated)))
+    }
     return this.active().connect(id)
   }
 }
@@ -272,6 +301,17 @@ export const scanner = new ActiveScanner()
 /** Turn the simulated pair on or off. Returns whether it is now on. */
 export const useFakeGlasses = (on: boolean): Promise<boolean> =>
   scanner.useFake(on, () => new FakeScanner())
+
+/**
+ * Whether the app is on the simulated pairs right now.
+ *
+ * A screen has to ask rather than remember. `SimulatedPair` used to hold the answer in
+ * its own `useState(false)`, and that component remounts on every disconnect and every
+ * visit to the tab, so after one switch the screen listed two simulated pairs while its
+ * own caption offered to "use simulated glasses". Same defect as the stale rows, in the
+ * one line that was supposed to label them.
+ */
+export const usingFakeGlasses = (): boolean => scanner.simulated
 
 /**
  * Re-exported so screens reach the fake through this file and never directly.

@@ -15,6 +15,10 @@
  *    the nicknames use, so a colour follows the unit, not the platform handle.
  *  - **lastPair** is the advert name of the last pair this phone opened, so the
  *    Glasses tab can reconnect without ceremony at a festival.
+ *  - **carried** is what each pair answered when it was last probed, per pair, on the
+ *    same key. Kept so a reconnect has something to show before the probe lands, and
+ *    handed back as `Remembered` rather than `Carried` so it can never be gated on:
+ *    `carried.ts` explains why a stale answer is not evidence.
  *
  * Same pure-store-plus-injected-file pattern as `nicknames.ts`, and its own file on
  * disk (`settings-store.ts`), never the ledger's: losing a default costs a tap,
@@ -24,6 +28,7 @@
  * the nickname store: an object read by key answers `Object.prototype` members for a
  * device that advertises as `__proto__`.
  */
+import { type Carried, type Remembered, cleanCarried, remember } from './carried.js'
 import type { TextFile } from './nicknames.js'
 
 export interface Defaults {
@@ -114,6 +119,7 @@ export function revive(raw: unknown): {
   favourites: string[]
   hidden: string[]
   groups: Group[]
+  carried: Map<string, Remembered>
 } {
   const root = isRecord(raw) ? raw : {}
   const d = isRecord(root.defaults) ? root.defaults : {}
@@ -123,6 +129,15 @@ export function revive(raw: unknown): {
       if (typeof theme === 'string' && theme !== '' && device !== '') {
         themes.set(device, theme)
       }
+    }
+  }
+  // Shape-checked by `carried.ts` rather than here, so the dashboard cannot be handed a
+  // string where a bitmap belongs by a file an older or newer app wrote.
+  const carried = new Map<string, Remembered>()
+  if (isRecord(root.carried)) {
+    for (const [device, entry] of Object.entries(root.carried)) {
+      const kept = cleanCarried(entry)
+      if (kept !== null && device !== '') carried.set(device, kept)
     }
   }
   return {
@@ -136,6 +151,7 @@ export function revive(raw: unknown): {
     favourites: cleanKeys(root.favourites),
     hidden: cleanKeys(root.hidden),
     groups: cleanGroups(root.groups),
+    carried,
   }
 }
 
@@ -149,6 +165,15 @@ export interface SettingsStore {
   setTheme(device: string, theme: string | null): void
   lastPair(): string | null
   setLastPair(device: string | null): void
+  /**
+   * What this pair answered when it was last probed, or null.
+   *
+   * `Remembered`, not `Carried`: it is display only and the type stops it reaching
+   * `can()`. A pair can be reflashed between sittings, so this is what it *was*.
+   */
+  carried(device: string): Remembered | null
+  /** Record this connection's own probe answer. Null forgets it. */
+  setCarried(device: string, carried: Carried | null): void
   /**
    * The pinned grid at the top of Show, in the order things were pinned. Keys are
    * built-in ids or `mine:<id>`; a key whose item is gone is simply never resolved,
@@ -193,6 +218,14 @@ export function createSettings(file: TextFile): SettingsStore {
           favourites: state.favourites,
           hidden: state.hidden,
           groups: state.groups,
+          // The `remembered` marker is a runtime brand, not data: it is put back by
+          // `cleanCarried` on the way in, so nothing on disk depends on it.
+          carried: Object.fromEntries(
+            [...state.carried].map(([device, c]) => [
+              device,
+              { kind: c.kind, version: c.version, capabilities: c.capabilities, at: c.at },
+            ]),
+          ),
         }),
       )
     } catch {
@@ -232,6 +265,13 @@ export function createSettings(file: TextFile): SettingsStore {
     lastPair: () => state.lastPair,
     setLastPair(device) {
       state.lastPair = device === '' ? null : device
+      persist()
+    },
+    carried: (device) => state.carried.get(device) ?? null,
+    setCarried(device, carried) {
+      if (device === '') return
+      if (carried === null) state.carried.delete(device)
+      else state.carried.set(device, remember(carried))
       persist()
     },
     favourites: () => [...state.favourites],

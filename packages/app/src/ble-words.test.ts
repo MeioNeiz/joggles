@@ -94,3 +94,30 @@ test('faultOf is not fooled by a second call, which a stateful regex would be', 
   expect(faultOf(raw)).toBe('dropped')
   expect(faultOf(raw)).toBe('dropped')
 })
+
+test('a bare handle is scrubbed even in a sentence that never says "device"', () => {
+  // Track 66. `FakeScanner.connect` threw "no such simulated pair: <id>", and for a scan
+  // row left over from the real source that id was the real pair's MAC. Nothing in it
+  // matches ble-plx's "Device <handle>" phrasing, so the rename had nothing to catch and
+  // printed the handle - the one thing this file exists to prevent. The app's own thrown
+  // sentences are exactly the ones ble-plx's wording does not describe.
+  const said = pairWords(new Error(`no such simulated pair: ${MAC}`), 'Rufus')
+  expect(said).not.toContain(MAC)
+  expect(said).not.toContain('3C:A3')
+  expect(said).toBe('no such simulated pair: Rufus')
+})
+
+test('scrubbing a bare handle is by MAC shape only, and leaves a service UUID alone', () => {
+  // Shape separates an Android handle from everything else this app handles, because
+  // every UUID here is dash-separated in 8-4-4-4-12 groups and a colon-MAC cannot be
+  // anything but a device. **An iOS handle is not separable that way**: it is a UUID, and
+  // so is the service UUID the test above deliberately keeps in its sentence. So position
+  // is all that covers iOS, and the belt for the rest is upstream - no thrown message in
+  // the app carries an id, which `fake-glasses.test.ts` crawls for.
+  const service = '0000fff0-0000-1000-8000-00805f9b34fb'
+  expect(pairWords(new Error(`Service ${service} unavailable`), 'Rufus')).toBe(
+    `Service ${service} unavailable`,
+  )
+  // A clock time is not a handle either: three groups, not six.
+  expect(pairWords(new Error('gave up at 12:34:56'), 'Rufus')).toBe('gave up at 12:34:56')
+})
