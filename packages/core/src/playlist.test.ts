@@ -465,6 +465,40 @@ test('back to a live step begins again, because MODE discarded the buffer', asyn
   expect(c.index).toBe(0)
 })
 
+/**
+ * `forget()`, which exists because the panel can be taken without this class
+ * sending anything: a built-in from a screen, a spray, or the firmware's own
+ * short-press `set_mode` when `jgx.BTN.SUPPRESS_CYCLE` is not in force (`press.ts`).
+ */
+test('forget makes the next live step begin again, not diff at a built-in', async () => {
+  const h = await harness()
+  const c = new pl.Cycler(h.driver, pl.compile(twoStatics()))
+
+  await c.next()
+  expect(c.panel).toBe('live')
+  c.forget()
+  expect(c.panel).toBe('unknown')
+  await c.next()
+
+  expect(h.log).toEqual(['begin', 'show', 'begin', 'show'])
+})
+
+test('forget leaves residency alone: a built-in takes the panel, not flash', async () => {
+  const h = await harness()
+  const plan = pl.compile(staticThenScroll())
+  const c = new pl.Cycler(h.driver, plan)
+
+  await c.next()
+  await c.next()
+  c.forget()
+  const again = await c.show(1)
+
+  expect(c.resident).toBe(plan.reel!.hash)
+  expect(again).toMatchObject({ cost: 'free', showing: true })
+  expect(again.save).toBeUndefined()
+  expect(h.datsCount()).toBe(1)
+})
+
 test('revisiting the resident reel writes nothing at all', async () => {
   const h = await harness()
   const plan = pl.compile(staticThenScroll())
@@ -576,6 +610,7 @@ test('a refused save shows nothing and leaves residency unknown', async () => {
   expect(result.save?.status).toBe('refused')
   // DATCP never went out, so the erases were never spent.
   expect(result.cost).toBe('free')
+  expect(result.showing).toBe(false)
   expect(c.resident).toBeNull()
   expect(h.log).toEqual(['begin', 'show', 'save:refused'])
   expect(c.index).toBe(1)
@@ -611,6 +646,77 @@ test('a DATCP the device did not acknowledge leaves residency unknown', async ()
   await c.next()
   expect((await c.next()).cost).toBe('save')
   expect(h.datsCount()).toBe(2)
+})
+
+/**
+ * The half of that defect the assertions above could not see, found by review-32.
+ *
+ * Residency was already right; the wire was not. `Cycler` withheld `MODE` on
+ * `refused` alone, so an `ERROR` fell through to `SPEED` then `MODE` and switched
+ * the panel to a store the same `DATS` had just zeroed - the identical defect track
+ * 32 fixed in `app/src/deliver.ts`, left standing in the file the same track owned.
+ * The test above passed throughout, because it never looked at the log.
+ */
+test('a commit answered ERROR sends neither SPEED nor MODE', async () => {
+  const h = await harness({ fail: true })
+  const c = new pl.Cycler(h.driver, pl.compile(staticThenScroll()))
+
+  await c.next()
+  const result = await c.next()
+
+  expect(h.log).toEqual(['begin', 'show', 'save:saved'])
+  expect(result.showing).toBe(false)
+  // The live buffer was never taken, so the next still diffs against it rather than
+  // beginning again over a panel it would have to redraw in full.
+  expect(c.panel).toBe('live')
+})
+
+/**
+ * `ERROR` is one reply of several. A dropped link answers nothing at all and
+ * `session.save()` turns that into `TIMEOUT`, which is the same situation and the
+ * likelier one in a field. Driven through a stub rather than a silent mock so the
+ * rule is pinned for every non-`DATCPOK` reply without a five-second wait.
+ */
+test('a commit that timed out sends neither SPEED nor MODE', async () => {
+  const log: string[] = []
+  const driver: pl.Driver = {
+    begin: async () => {
+      log.push('begin')
+    },
+    show: async () => {
+      log.push('show')
+      return COLS
+    },
+    command: async (frame) => {
+      log.push(describeFrame(frame))
+    },
+    save: async () => {
+      log.push('save')
+      return { status: 'saved', reply: 'TIMEOUT', committed: false, saves: 1 }
+    },
+  }
+  const c = new pl.Cycler(driver, pl.compile(staticThenScroll()))
+
+  await c.next()
+  const result = await c.next()
+
+  expect(log).toEqual(['begin', 'show', 'save'])
+  expect(result).toMatchObject({ cost: 'save', showing: false })
+  expect(c.resident).toBeNull()
+})
+
+/** The three ways a press does reach the panel, so `showing` is not just always false. */
+test('showing is true for a live step, a committed reel and a resident one', async () => {
+  const h = await harness()
+  const plan = pl.compile(staticThenScroll())
+  const c = new pl.Cycler(h.driver, plan)
+
+  expect((await c.next()).showing).toBe(true)
+  const committed = await c.next()
+  expect(committed).toMatchObject({ cost: 'save', showing: true })
+
+  const back = new pl.Cycler(h.driver, plan, { resident: plan.reel!.hash })
+  expect(await back.show(1)).toMatchObject({ cost: 'free', showing: true })
 })
 
 test('a seeded resident hash makes the first visit free', async () => {

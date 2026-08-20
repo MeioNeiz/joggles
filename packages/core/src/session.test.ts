@@ -286,6 +286,79 @@ test('end disconnects, and flushes with an acked write first', async () => {
   expect(t.commands).not.toContain('DATCP')
 })
 
+test('an unsolicited button press during a probe does not read a crew unit as stock', async () => {
+  // The defect this replaces: `extWaiters` was untyped, so the first extension
+  // notification of ANY type resolved the probe, and `probe()` calls anything that
+  // is not a hello stock. A press inside the 1.5s window therefore turned a crew
+  // unit into a stock one, silently, on the one code path the whole mixed fleet
+  // rests on. Found by three separate reviews before it ever reached hardware.
+  const t = new MockTransport()
+  t.answer = (w) => {
+    if (w.char !== p.CHAR_COMMAND) return []
+    return [buttonEvent(), helloReply(2, 5)]
+  }
+  const g = await attach(t)
+
+  expect(await g.probe(20)).toEqual({
+    kind: 'crew',
+    name: 'GLASSES-TEST',
+    version: 2,
+    capabilities: 5,
+  })
+})
+
+test('an unsolicited event does not consume a waiter that wanted something else', async () => {
+  const t = new MockTransport()
+  const g = await attach(t)
+
+  const probing = g.probe(200)
+  t.notify(buttonEvent())
+  t.notify(buttonEvent())
+  t.notify(helloReply(3, 9))
+
+  expect(await probing).toMatchObject({ kind: 'crew', version: 3, capabilities: 9 })
+})
+
+test('onEvent gets what nobody waited for, and never what a waiter wanted', async () => {
+  const t = new MockTransport()
+  const g = await attach(t)
+
+  const seen: string[] = []
+  const off = g.onEvent((m) => seen.push(m.type))
+
+  t.notify(buttonEvent())
+  // A hello with a probe outstanding belongs to the probe, not to the listener.
+  const probing = g.probe(200)
+  t.notify(helloReply(1, 1))
+  await probing
+  expect(seen).toEqual(['button'])
+
+  off()
+  t.notify(buttonEvent())
+  expect(seen).toEqual(['button'])
+})
+
+test('a probe that times out leaves no waiter behind to swallow a later reply', async () => {
+  const t = new MockTransport()
+  const g = await attach(t)
+
+  expect(await g.probe(5)).toEqual({ kind: 'stock', name: 'GLASSES-TEST' })
+
+  // If the timed-out waiter were still registered it would eat this one, and the
+  // second probe would time out as stock despite the device answering.
+  t.answer = () => [helloReply(4, 3)]
+  expect(await g.probe(20)).toMatchObject({ kind: 'crew', version: 4, capabilities: 3 })
+})
+
+/** An unsolicited press: `[len][marker][type][edge][count][index][ticks32]`. */
+function buttonEvent(edge = jgx.EDGE.PRESS): Uint8Array {
+  const block = new Uint8Array(p.BLOCK_SIZE)
+  const payload = [jgx.MARKER, jgx.MSG.BUTTON, edge, 1, jgx.INDEX_NONE, 0, 0, 0, 0]
+  block[0] = payload.length
+  block.set(payload, 1)
+  return block
+}
+
 /** What our firmware answers HELLO with: `[len][marker][type][ver16][caps16]`. */
 function helloReply(version: number, capabilities: number): Uint8Array {
   const block = new Uint8Array(p.BLOCK_SIZE)

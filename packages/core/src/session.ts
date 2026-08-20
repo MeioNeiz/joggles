@@ -157,7 +157,20 @@ export class Glasses {
 
   private waiters: Array<(reply: string) => void> = []
 
-  private extWaiters: Array<(msg: jgx.Notification) => void> = []
+  /**
+   * Waiters for an extension notification, each keyed on the type it asked for.
+   *
+   * Keyed rather than a bare list because `MSG.BUTTON` is **unsolicited**: it
+   * arrives when a person presses the button, not in answer to anything. An
+   * untyped list let one press resolve every pending waiter with the wrong frame,
+   * and since `probe()` treats a non-hello as stock, a press landing inside the
+   * 1.5s probe window reported a crew unit as stock. Found three times over by
+   * separate reviews of tracks 61 and 62 before anything reached hardware.
+   */
+  private extWaiters: Array<{ want: jgx.Notification['type']; fn: (msg: jgx.Notification) => void }> = []
+
+  /** Subscribers to unsolicited events. A press with nobody listening is dropped. */
+  private eventListeners: Array<(msg: jgx.Notification) => void> = []
 
   private constructor(
     private transport: Transport,
@@ -209,7 +222,18 @@ export class Glasses {
 
       const msg = jgx.parseNotification(plain)
       if (msg) {
-        for (const w of this.extWaiters.splice(0)) w(msg)
+        const kept: typeof this.extWaiters = []
+        let delivered = false
+        for (const w of this.extWaiters) {
+          if (!delivered && w.want === msg.type) {
+            delivered = true
+            w.fn(msg)
+          } else {
+            kept.push(w)
+          }
+        }
+        this.extWaiters = kept
+        if (!delivered) for (const l of this.eventListeners) l(msg)
         return
       }
       const reply = dats.parseReply(plain)
@@ -220,6 +244,46 @@ export class Glasses {
 
   private send(char: string, frame: Uint8Array, withResponse: boolean): Promise<void> {
     return this.transport.write(char, this.cipher.encrypt(frame), withResponse)
+  }
+
+  /**
+   * Wait for one extension notification of exactly this type.
+   *
+   * A timeout resolves `null` rather than throwing, because for `probe()` silence
+   * is the answer a stock unit gives and not a failure. Anything of another type
+   * that arrives meanwhile is left for its own waiter, or for `onEvent`.
+   */
+  private waitFor(
+    want: jgx.Notification['type'],
+    timeoutMs: number,
+  ): Promise<jgx.Notification | null> {
+    return new Promise((resolve) => {
+      const entry = {
+        want,
+        fn: (m: jgx.Notification) => {
+          clearTimeout(timer)
+          resolve(m)
+        },
+      }
+      const timer = setTimeout(() => {
+        this.extWaiters = this.extWaiters.filter((w) => w !== entry)
+        resolve(null)
+      }, timeoutMs)
+      this.extWaiters.push(entry)
+    })
+  }
+
+  /**
+   * Listen for notifications nobody asked for, which today means a button press.
+   *
+   * Returns the unsubscribe. An event is offered to listeners only when no waiter
+   * wanted it, so a subscriber cannot steal a reply out from under a command.
+   */
+  onEvent(fn: (msg: jgx.Notification) => void): () => void {
+    this.eventListeners.push(fn)
+    return () => {
+      this.eventListeners = this.eventListeners.filter((l) => l !== fn)
+    }
   }
 
   private waitReply(timeoutMs = 5000): Promise<string> {
@@ -241,13 +305,7 @@ export class Glasses {
    */
   async probe(timeoutMs = 1500): Promise<Identity> {
     const name = this.name
-    const reply = new Promise<jgx.Notification | null>((resolve) => {
-      const timer = setTimeout(() => resolve(null), timeoutMs)
-      this.extWaiters.push((m) => {
-        clearTimeout(timer)
-        resolve(m)
-      })
-    })
+    const reply = this.waitFor('hello', timeoutMs)
     await this.send(p.CHAR_COMMAND, jgx.hello(), false)
 
     const msg = await reply

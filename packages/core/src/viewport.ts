@@ -67,7 +67,12 @@ export function windowAt(
     const from = wrap ? ((src % cols) + cols) % cols : src
     if (from < 0 || from >= cols) continue
     for (let r = 0; r < Math.min(bitmap.length, ROWS); r++) {
-      if (alive(r, c)) out[r][c] = bitmap[r][from]
+      // `?? 0` because a ragged bitmap has rows shorter than `width()`, and reading past
+      // one wrote `undefined` into a `Bitmap` that every caller treats as numbers. It
+      // became `NaN` downstream through `content.toGrid` rather than throwing anywhere.
+      // Latent, since everything upstream normalises today, but this module is the one
+      // every preview is meant to go through, so it absorbs it rather than trusting.
+      if (alive(r, c)) out[r][c] = bitmap[r][from] ?? 0
     }
   }
   return out
@@ -160,7 +165,12 @@ export function marqueeAt(bitmap: Bitmap, offset = 0): Bitmap {
     const from = (((offset + c) % total) + total) % total
     if (from >= cols) continue
     for (let r = 0; r < Math.min(bitmap.length, ROWS); r++) {
-      if (alive(r, c)) out[r][c] = bitmap[r][from]
+      // `?? 0` because a ragged bitmap has rows shorter than `width()`, and reading past
+      // one wrote `undefined` into a `Bitmap` that every caller treats as numbers. It
+      // became `NaN` downstream through `content.toGrid` rather than throwing anywhere.
+      // Latent, since everything upstream normalises today, but this module is the one
+      // every preview is meant to go through, so it absorbs it rather than trusting.
+      if (alive(r, c)) out[r][c] = bitmap[r][from] ?? 0
     }
   }
   return out

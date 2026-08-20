@@ -256,3 +256,29 @@ function alivePixels(): number {
   for (let r = 0; r < 9; r++) for (let c = 0; c < WIDTH; c++) if (alive(r, c)) n++
   return n
 }
+
+test('a ragged bitmap yields numbers, not undefined, through both windows', () => {
+  // Track 69 found this by reading rather than by a failing test: both windows read
+  // `bitmap[r][from]` with no fallback, so a row shorter than `width()` wrote undefined
+  // into a Bitmap and became NaN downstream through `content.toGrid`. Nothing upstream
+  // produces a ragged bitmap today, which is exactly why it needed a test rather than
+  // a comment.
+  const ragged: number[][] = [[1, 2, 3, 0], [3], [0, 0, 0, 0]]
+
+  for (const grid of [
+    windowAt(ragged, 1, { wrap: true }),
+    windowAt(ragged, 1),
+    marqueeAt(ragged, 1),
+  ]) {
+    for (const row of grid) {
+      for (const cell of row) {
+        expect(typeof cell).toBe('number')
+        expect(Number.isNaN(cell)).toBe(false)
+      }
+    }
+  }
+
+  // The short row's one real pixel still lands where it should, so the fallback filled
+  // the gaps rather than flattening the row.
+  expect(windowAt(ragged, 0)[1][0]).toBe(3)
+})

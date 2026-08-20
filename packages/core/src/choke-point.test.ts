@@ -10,6 +10,12 @@
  * out. Every one of those adds a second caller, and this test is what notices.
  *
  * Reasoning and the full list: "Flash wear" in `notes/app-plan.md`.
+ *
+ * *Corrected 2026-08-20, track 64: this walked `.ts` only, so all thirteen `.tsx` files
+ * were invisible to it.* Every runaway cause the paragraph above names is React code,
+ * and React code in this repo lives in `.tsx`. A `dats.datsComplete()` added to any
+ * screen passed the build, verified by adding one to `screens/Library.tsx` in a scratch
+ * copy and watching the suite stay green.
  */
 import { expect, test } from 'bun:test'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -27,13 +33,18 @@ function code(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
 }
 
+const isSource = (entry: string) =>
+  (entry.endsWith('.ts') || entry.endsWith('.tsx')) &&
+  // Tests may name it; they run against a mock and write no flash.
+  !entry.endsWith('.test.ts') &&
+  !entry.endsWith('.test.tsx')
+
 function sources(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     if (SKIP.has(entry) || entry.startsWith('.')) continue
     const path = join(dir, entry)
     if (statSync(path).isDirectory()) sources(path, out)
-    // Tests may name it; they run against a mock and write no flash.
-    else if (entry.endsWith('.ts') && !entry.endsWith('.test.ts')) out.push(path)
+    else if (isSource(entry)) out.push(path)
   }
   return out
 }
@@ -48,6 +59,10 @@ test('the scan sees the codebase it thinks it does', () => {
   const all = sources(ROOT).map((f) => f.slice(ROOT.length + 1))
   expect(all).toContain('packages/core/src/session.ts')
   expect(all).toContain('packages/cli/src/glasses.ts')
+  // And the screens, which is where a stray save would come from and where this
+  // walker could not see for eight days.
+  expect(all).toContain('packages/app/App.tsx')
+  expect(all.filter((f) => f.endsWith('.tsx')).length).toBeGreaterThan(5)
   expect(all.length).toBeGreaterThan(20)
 })
 

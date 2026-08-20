@@ -18,6 +18,13 @@
  * only when the reel itself changed. `individual` mode gives each scroller its own
  * type 1 save, five page erases per press, and is opt-in for that reason.
  *
+ * **"A press" here means a phone tap on stock, and the unit's own button on a crew
+ * unit.** The half that makes the physical button drive this is `press.ts`, over the
+ * `BUTTON` sub-command: it subscribes, takes the short press off the firmware's
+ * built-in cycle, and calls `show()` on steps it has priced `free`, so the button
+ * cannot spend an erase. Nothing about this module changes for it, which is what
+ * `Driver` being four methods was for. It added `forget()` and nothing else.
+ *
  * **Residency is still this module's own bookkeeping, and the reason has changed.**
  * `budget.allow()` used to skip a payload equal to the last acknowledged save of *any*
  * type, so one type 2 save from a drawing screen between two visits to the same reel
@@ -455,6 +462,14 @@ export interface StepResult {
   cost: Cost
   /** Present only when a save was attempted. `skipped` means it was already there. */
   save?: SaveResult
+  /**
+   * Whether the panel was actually switched to this step.
+   *
+   * False whenever the commit was not acknowledged, because no `MODE` goes out then
+   * and the device keeps displaying whatever it was displaying. `cost` cannot answer
+   * this: a rejected commit costs a full save and shows nothing.
+   */
+  showing: boolean
   /** Column writes sent, for a live step. */
   writes: number
 }
@@ -472,6 +487,17 @@ export interface StepResult {
  * A `BudgetError` from `save()` propagates and the index does not move. Nothing
  * here retries: a retry loop round a flash write is the runaway the budget exists
  * to stop.
+ *
+ * **`MODE` goes out only when the device is holding the reel**, which until
+ * review-32 it did not. `session.save()` answers `saved` for any `DATCP` it managed
+ * to send, because the erases happen at the device's end whatever came back; this
+ * class withheld the `MODE` on `refused` alone, so a commit answered `ERROR` or
+ * `TIMEOUT` switched the panel to a store the same `DATS` had just zeroed and
+ * reported a normal press. That is the identical defect track 32 fixed in
+ * `app/src/deliver.ts`, in the file the same track owned, and the two now read the
+ * same flag: `save.status === 'skipped' || save.committed`. `StepResult.showing`
+ * carries the answer out, because `cost` cannot: a rejected commit costs a full save
+ * and shows nothing.
  *
  * **One press at a time, and this holds no mutex**, exactly like `Glasses`. A
  * second press landing inside the DATS handshake is the defect review-1 found on
@@ -526,6 +552,26 @@ export class Cycler {
   }
 
   /**
+   * Something else took the panel, so forget what it was last told.
+   *
+   * The next `live` step then calls `begin()` and redraws in full instead of
+   * diffing against a buffer the device no longer holds, which is
+   * `app/src/panel-session.ts`'s `dropped()` rule in the one class that keeps the
+   * same belief here. Call it after anything that takes the panel from underneath a
+   * cycler: a built-in (`MODE`, `ANIM`, `IMAG`) shown from a screen, a spray, or the
+   * firmware's own short-press `set_mode` when `jgx.BTN.SUPPRESS_CYCLE` is not known
+   * to be in force (`press.ts`, which is this method's caller).
+   *
+   * **Residency is deliberately untouched.** A built-in takes the live buffer and the
+   * panel, not the type 1 store, and `MODE` is what switches back to it. Clearing the
+   * held hash here would make the next reel visit re-save content the device is still
+   * holding, which is the exact five-erase mistake this class was written to avoid.
+   */
+  forget(): void {
+    this.state = 'unknown'
+  }
+
+  /**
    * What showing step `i` will cost, before anything is sent.
    *
    * A prediction, and it errs towards `save`: the budget may still skip a payload
@@ -569,7 +615,7 @@ export class Cycler {
       }
       const writes = await this.driver.show(viewport.gridAt(step.bitmap))
       this.idx = at
-      return { index: at, step, cost: 'free', writes }
+      return { index: at, step, cost: 'free', showing: true, writes }
     }
 
     const reel = step.reel!
@@ -586,7 +632,7 @@ export class Cycler {
         // whatever it held. What that was is no longer knowable from here.
         this.held = null
         this.idx = at
-        return { index: at, step, cost: 'free', save, writes: 0 }
+        return { index: at, step, cost: 'free', save, showing: false, writes: 0 }
       }
       // `saved` means DATCP went out, not that the device liked it: a dropped block
       // or a silent link gives `ERROR` or `TIMEOUT` and the ledger records ok:false.
@@ -596,6 +642,14 @@ export class Cycler {
       // same one back off the ledger.
       const stored = save.status === 'skipped' || save.committed
       this.held = stored ? reel.hash : null
+      if (!stored) {
+        // The same rule `deliver()` follows: no `MODE` on a commit the device did not
+        // acknowledge. `DATS` zeroed the store and the erases were spent, so a `MODE`
+        // here switches the panel away from whatever the wearer was looking at and on
+        // to a store that is now empty. `cost` is still `save`, because it was one.
+        this.idx = at
+        return { index: at, step, cost: 'save', save, showing: false, writes: 0 }
+      }
     }
     // SPEED before MODE, the order the vendor app's own log shows.
     await this.driver.command(p.speed(speedOf(step.motion)))
@@ -608,6 +662,7 @@ export class Cycler {
       step,
       cost: save?.status === 'saved' ? 'save' : 'free',
       save,
+      showing: true,
       writes: 0,
     }
   }
