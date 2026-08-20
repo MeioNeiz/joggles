@@ -275,6 +275,78 @@ export class Asm {
   }
 
   /** ldrh Rt, [Rn, #imm], imm a multiple of 2 up to 62 */
+  /** str rt, [rn, #imm]. Word store, so `imm` must be a multiple of 4. */
+  str(rt: Reg, rn: Reg, imm: number): this {
+    lo(rt, 'str')
+    lo(rn, 'str')
+    if (imm % 4 !== 0) throw new Error(`str: offset ${imm} is not a multiple of 4`)
+    this.emit16(0x6000 | (fits(imm / 4, 5, 'str') << 6) | (REGS[rn] << 3) | REGS[rt])
+    return this
+  }
+
+  /** ldr rt, [rn, #imm]. Word load, so `imm` must be a multiple of 4. */
+  ldr(rt: Reg, rn: Reg, imm: number): this {
+    lo(rt, 'ldr')
+    lo(rn, 'ldr')
+    if (imm % 4 !== 0) throw new Error(`ldr: offset ${imm} is not a multiple of 4`)
+    this.emit16(0x6800 | (fits(imm / 4, 5, 'ldr') << 6) | (REGS[rn] << 3) | REGS[rt])
+    return this
+  }
+
+  /** ldr rt, [rn, rm]. Register offset, for indexing a table. */
+  ldrReg(rt: Reg, rn: Reg, rm: Reg): this {
+    this.emit16(0x5800 | (lo(rm, 'ldrReg') << 6) | (lo(rn, 'ldrReg') << 3) | lo(rt, 'ldrReg'))
+    return this
+  }
+
+  /** str rt, [rn, rm]. */
+  strReg(rt: Reg, rn: Reg, rm: Reg): this {
+    this.emit16(0x5000 | (lo(rm, 'strReg') << 6) | (lo(rn, 'strReg') << 3) | lo(rt, 'strReg'))
+    return this
+  }
+
+  /** ldrb rt, [rn, rm]. */
+  ldrbReg(rt: Reg, rn: Reg, rm: Reg): this {
+    this.emit16(0x5c00 | (lo(rm, 'ldrbReg') << 6) | (lo(rn, 'ldrbReg') << 3) | lo(rt, 'ldrbReg'))
+    return this
+  }
+
+  /** subs rd, rn, rm. Three operands, unlike `subs(rdn, imm)`. */
+  subsReg(rd: Reg, rn: Reg, rm: Reg): this {
+    this.emit16(0x1a00 | (lo(rm, 'subsReg') << 6) | (lo(rn, 'subsReg') << 3) | lo(rd, 'subsReg'))
+    return this
+  }
+
+  /** The 010000 data-processing group: two low registers, flags always set. */
+  private dp(op: number, rd: Reg, rm: Reg, what: string): this {
+    this.emit16(0x4000 | (op << 6) | (lo(rm, what) << 3) | lo(rd, what))
+    return this
+  }
+
+  ands(rd: Reg, rm: Reg): this {
+    return this.dp(0x0, rd, rm, 'ands')
+  }
+
+  eors(rd: Reg, rm: Reg): this {
+    return this.dp(0x1, rd, rm, 'eors')
+  }
+
+  orrs(rd: Reg, rm: Reg): this {
+    return this.dp(0xc, rd, rm, 'orrs')
+  }
+
+  bics(rd: Reg, rm: Reg): this {
+    return this.dp(0xe, rd, rm, 'bics')
+  }
+
+  mvns(rd: Reg, rm: Reg): this {
+    return this.dp(0xf, rd, rm, 'mvns')
+  }
+
+  tst(rn: Reg, rm: Reg): this {
+    return this.dp(0x8, rn, rm, 'tst')
+  }
+
   ldrh(rt: Reg, rn: Reg, imm: number): this {
     const w = 'ldrh'
     if (imm % 2 !== 0) throw new Error(`${w}: offset ${imm} is not even`)

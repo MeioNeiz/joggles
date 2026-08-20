@@ -21,10 +21,6 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 const out = (name: string) => join(dir, name)
 const quiet = () => {}
 
-const STOCK_LOOP = bytes(
-  '4c 2a 0b d1 e0 78 4f 28 08 d1 20 79 4f 28 05 d1 60 79 50 28 02 d1 18 20 09 f0 87 fd',
-)
-
 describe.if(existsSync(STOCK))('building the v1 image', () => {
   const stock = new Uint8Array(readFileSync(STOCK))
   const extension = buildExtension({ version: 1 })
@@ -35,10 +31,14 @@ describe.if(existsSync(STOCK))('building the v1 image', () => {
       out: out('v1.bin'),
       stock: STOCK,
       log: quiet,
-      assertions: [
-        { abs: 0x184a6, expect: bytes('00 e7'), note: 'the LIGHT arm back-branch' },
+      edits: [
+        {
+          abs: ext.HOOK_ADDR,
+          expect: ext.hookStockBytes(ext.APK_HOOK_SITE),
+          to: hook,
+          note: 'the hook',
+        },
       ],
-      edits: [{ abs: ext.HOOK_ADDR, expect: STOCK_LOOP, to: hook, note: 'the hook' }],
       appends: [{ abs: extension.base, data: extension.code, note: 'JGX1 v1' }],
     })
 
@@ -55,7 +55,7 @@ describe.if(existsSync(STOCK))('building the v1 image', () => {
     const after = ota.plaintext(container)
     expect(after.length - before.length).toBe(extension.code.length)
 
-    // Every in-place difference is inside the 28-byte hook. If an append had
+    // Every in-place difference is inside the four-byte hook. If an append had
     // shifted anything, this would light up across the whole image.
     for (let i = 0; i < before.length; i++) {
       if (before[i] === after[i]) continue
@@ -71,14 +71,18 @@ describe.if(existsSync(STOCK))('building the v1 image', () => {
       magic: jgx.MAGIC,
       version: 1,
       entry: extension.entry,
-      subcommands: [jgx.SUB.HELLO],
+      subcommands: [
+        jgx.SUB.HELLO, jgx.SUB.UPD_BEGIN, jgx.SUB.UPD_DATA,
+        jgx.SUB.UPD_END, jgx.SUB.UPD_ABORT, jgx.SUB.UPD_STATUS,
+      ],
     })
   })
 
   test('the hook in the flashed image points at the flashed entry', async () => {
     const plain = ota.plaintext(await v1())
-    const dv = new DataView(plain.buffer, plain.byteOffset)
-    expect(dv.getUint32(0x182b4 - 0x16800, true)).toBe(extension.entry)
+    const landed = ext.branchAt(plain, 0x16800, ext.HOOK_ADDR)
+    expect(landed?.kind).toBe('bl')
+    expect(landed?.target).toBe(extension.entry & ~1)
   })
 })
 

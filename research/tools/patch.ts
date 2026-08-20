@@ -136,6 +136,34 @@ export interface BuildOptions {
   /** Bytes the patch depends on but does not write. Checked against stock. */
   assertions?: Assertion[]
   stock?: string
+  /**
+   * Patch this plaintext instead of reading a container off disk.
+   *
+   * For a donor build: the base is a working unit's own application, read back over
+   * SWD, and there is no container for it. Everything else is unchanged, including the
+   * `expect` checks and the `ota.check` gate, which is handed a container encoded from
+   * the same plaintext so the diff is against the donor rather than against the APK.
+   */
+  basePlain?: Uint8Array
+  baseName?: string
+  /**
+   * The build label to hold the payload to, e.g. `TR1906R04-12`.
+   *
+   * `ota.check` defaults to the APK's own label, so a donor build fails
+   * `wrong-variant` without this. Passing it is not silencing the check: the label
+   * comes out of the donor's own application, so it says "this image is for the
+   * hardware this donor is", which is the question the finding asks.
+   */
+  expectVersion?: string
+  /**
+   * A raw SWD dump, from flash address 0, of the unit this image is meant for.
+   *
+   * What turns on `compareDevice`, i.e. whether every callback slot the target's BLE
+   * stack dispatches through is one this image registers. That is the check that was
+   * missing on 2026-08-08, and with it the build gate is about a unit rather than
+   * about a file.
+   */
+  reference?: Uint8Array
   /** Skip the ota.check gate. There is no good reason; it exists for unit tests. */
   skipCheck?: boolean
   /** Where the running commentary goes. Tests silence it. */
@@ -155,8 +183,11 @@ const MAX_BODY = ota.FLASH_APP_SIZE
 /** Apply the edits to stock and write a flashable container. Throws on any problem. */
 export async function build(opts: BuildOptions): Promise<Uint8Array> {
   const log = opts.log ?? console.log
-  const stockPath = opts.stock ?? STOCK
-  const stockFile = new Uint8Array(await Bun.file(stockPath).arrayBuffer())
+  const hdr = { appVer: 3, devVer: 10, proVer: 10, type: ota.OTA_APP }
+  const stockPath = opts.baseName ?? opts.stock ?? STOCK
+  const stockFile = opts.basePlain
+    ? ota.encode(opts.basePlain, hdr)
+    : new Uint8Array(await Bun.file(stockPath).arrayBuffer())
   const plain = ota.plaintext(stockFile)
 
   let failed = false
@@ -233,10 +264,13 @@ export async function build(opts: BuildOptions): Promise<Uint8Array> {
   }
   if (failed) throw new Error('refusing to emit: an edit did not match its expectation')
 
-  const hdr = { appVer: 3, devVer: 10, proVer: 10, type: ota.OTA_APP }
   const container = ota.encode(patched, hdr)
   if (!opts.skipCheck) {
-    const verdict = ota.check(container, { stock: stockFile })
+    const verdict = ota.check(container, {
+      stock: stockFile,
+      expectVersion: opts.expectVersion,
+      reference: opts.reference,
+    })
     if (!verdict.safe) {
       log(ota.report(verdict))
       throw new Error('ota.check refused the built image')
@@ -247,6 +281,9 @@ export async function build(opts: BuildOptions): Promise<Uint8Array> {
   const grewBy = patched.length - plain.length
   log(`\nwrote ${opts.out}: ${patched.length} body bytes, crc32 ${crc}`)
   log(`grew by ${grewBy} bytes; ${MAX_BODY - patched.length} left below the bank`)
-  log(`now run: bun run ota-check ${opts.out} ${stockPath}`)
+  // A donor base is a window out of a dump, not a container, so there is no second
+  // command to run against it and printing one would be an instruction that fails.
+  if (opts.basePlain) log(`base was ${stockPath}, and ota.check has already run on it`)
+  else log(`now run: bun run ota-check ${opts.out} ${stockPath}`)
   return container
 }

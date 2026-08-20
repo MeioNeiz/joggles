@@ -443,7 +443,14 @@ The remaining **16** uncovered sites are `SYS_REGLCTL` writes in clock and power
 plus the two `DATS` saved-content writers at `abs 0x214c4` and `0x21508`. Breaking those
 costs saved content, not recoverability, so they are deliberately left out.
 *Corrected: this said 18, which predates the three regions being added. The number the
-audit prints is 16, and `fwtool regions` asserts it.*
+audit prints is 16.*
+
+*Corrected again 2026-08-20, track 58: `fwtool regions` no longer asserts any count, and
+16 is an **APK-layout** number. The donor build reports **39**, because the flash driver
+grew a UID reader and its tail moved, sliding three sites out of the span named for it,
+two of which are the word programmer and the page eraser. All seven regions now resolve by
+**content** in whichever image is handed in, and the gate asserts five properties true of
+any build instead of a magic number. `research/protected-regions-2026-08-20.md`.*
 
 **`ota.ts` now carries all three**, so the sentence that used to stand here, warning that
 `ota-check` would pass a patch removing our own way back, no longer applies. Left as a
