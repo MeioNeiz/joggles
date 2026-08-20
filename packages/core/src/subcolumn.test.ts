@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import * as content from './content.js'
+import * as font from './font.js'
 import { COLS, MAX_LEVEL, ROWS, alive } from './display.js'
 import * as jgx from './jgx.js'
 import * as protocol from './protocol.js'
@@ -12,8 +13,8 @@ const STEPS = [1, 2, 3, 4]
 const SPEEDS = [0, 5, 15, 25, 35, 45, 55, 65, 75, 85, 95, 100]
 
 /** A word wide enough to scroll, at full level, monochrome. */
-const word = (body = 'JOGGLES') =>
-  content.text(body, { kind: 'scroll', dir: 0, speed: 50 })
+const word = (body = 'JOGGLES', face?: font.Font) =>
+  content.text(body, { kind: 'scroll', dir: 0, speed: 50 }, face ? { font: face } : {})
 
 const lit = (bitmap: content.Bitmap): number =>
   bitmap.reduce((n, row) => n + row.filter((v) => v > 0).length, 0)
@@ -324,9 +325,24 @@ describe('the same look through tile frames, and what bounds it', () => {
   })
 
   test('smoothing JOGGLES host-side blows the sixteen-tile ceiling', () => {
-    const bitmap = word().bitmap
+    // The face is NAMED, not inherited. This asserted 11 against whatever `DEFAULT_FONT`
+    // happened to be, and the default moved from band5 to band6 on measurement, which
+    // made JOGGLES wider and the count 12. `font.ts` already warns that `DEFAULT_FONT`
+    // decides how every stored item renders; a test that reads an exact pixel count off
+    // it is that warning arriving as a failure.
+    const bitmap = word('JOGGLES', font.BAND5).bitmap
     expect(tiles.planProblems(sub.frames(bitmap, { steps: 1 }))).toEqual([])
     expect(tiles.tilesFor(sub.frames(bitmap, { steps: 1 })).length).toBe(11)
+    expect(tiles.planProblems(sub.frames(bitmap, { steps: 2 }))[0]).toMatch(
+      /distinct columns and a palette holds 16/,
+    )
+  })
+
+  test('and it blows the ceiling in whatever face is currently the default', () => {
+    // The point of the row above is the ceiling, not the number, so this is the part
+    // that must survive a change of default. It carries no pixel count on purpose.
+    const bitmap = word().bitmap
+    expect(tiles.planProblems(sub.frames(bitmap, { steps: 1 }))).toEqual([])
     expect(tiles.planProblems(sub.frames(bitmap, { steps: 2 }))[0]).toMatch(
       /distinct columns and a palette holds 16/,
     )

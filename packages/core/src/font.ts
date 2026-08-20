@@ -20,12 +20,27 @@
  * `band5` spending its sixth row on air is a legibility choice rather than an
  * oversight (`fonts/band5.ts`).
  *
- * **`DEFAULT_FONT` is `band5` and changing it changes old content.** Every text
- * item in every library is stored as a string, and one saved before fonts were
- * pickable has no face recorded, so it renders in whatever this points at. New
- * faces are therefore added *beside* it and none of them is a replacement.
- * `fit.fontByName(undefined)` is the read path for those older items and answers
- * `LEGACY_FONT`, which is pinned to `band5` and does not follow this.
+ * **`DEFAULT_FONT` is `band6`, and it is what a *new* item starts as.**
+ * *Corrected 2026-08-14: this said the default was `band5` and that changing it
+ * changes old content. The second half was wrong, and it is the reason the
+ * default sat on the less legible face. An item saved with no face recorded is
+ * read through `fit.fontByName(undefined)`, which answers `LEGACY_FONT`, pinned
+ * to `band5` and deliberately not following this constant. So old content is
+ * unaffected by this line; only what a new message starts as moves.*
+ *
+ * `band6` is the default because it is measurably the clearest at 24 columns, not
+ * as a matter of taste. Compared pixel by pixel across letters and digits,
+ * `band5` has ten pairs that differ by a single pixel (`H`/`K`, `K`/`X`, `O`/`Q`,
+ * `O`/`0`, `Z`/`2`, `F`/`f`, `c`/`q`, `g`/`o`, `g`/`q`, `o`/`u`) and `slim5` has
+ * fifteen; `band6` has none. One pixel is a coin toss on a panel that is moving.
+ * The sixth row is what buys it, by giving lowercase an x-height of 4 instead of
+ * 3. `font.test.ts` holds the default to that standard so it cannot regress.
+ *
+ * What it costs is width, and the cost is small: over the corpus in
+ * `font.test.ts` the mean message is 19.9 columns against `band5`'s 16.4, and of
+ * 34 sample messages 27 still fit the free 24 columns where `band5` fits 29. Two
+ * messages in 34 move from free to a five-erase save, in exchange for an
+ * alphabet with no one-pixel ambiguity left in it.
  *
  * `panelBitmap` is the scrolling path and it is what `content.text` uses. It
  * keeps every glyph inside the safe band at every column, so a message can be
@@ -43,13 +58,14 @@
  * `fonts/fit.ts`. Glyph tables and the kerning arithmetic: `fonts/`.
  */
 import { ROWS } from './display.js'
-import { BAND5 } from './fonts/band5.js'
+import { BAND6 } from './fonts/band6.js'
 import * as kern from './fonts/kern.js'
 import { type StaticOptions, staticText } from './fonts/place.js'
 import type { Font } from './fonts/types.js'
 
 export { BAND5 } from './fonts/band5.js'
 export { BAND6 } from './fonts/band6.js'
+export { CAPS5 } from './fonts/caps5.js'
 export { SLIM5 } from './fonts/slim5.js'
 export { TALL7 } from './fonts/tall7.js'
 export { staticText, widestGlyph } from './fonts/place.js'
@@ -78,12 +94,15 @@ export const BASELINE = 2
 export const HEIGHT = 5
 
 /**
- * What everything here uses unless told otherwise.
+ * What everything here uses unless told otherwise, and what a new message starts
+ * as.
  *
- * Pinned to `band5` for the reason in this file's head: it is what every stored
- * text item that names no font already renders in.
+ * `band6` for the measured reason in this file's head: no two letters or digits
+ * in it are within one pixel of each other, where `band5` has ten such pairs.
+ * This is **not** the read path for stored items that name no face; that is
+ * `LEGACY_FONT`, which stays `band5` so nothing already saved changes shape.
  */
-export const DEFAULT_FONT = BAND5
+export const DEFAULT_FONT = BAND6
 
 /**
  * A base gap in columns, or the full set. The number form is what every call

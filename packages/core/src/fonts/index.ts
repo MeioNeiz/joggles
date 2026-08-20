@@ -5,6 +5,7 @@
 export type { Font } from './types.js'
 export { BAND5 } from './band5.js'
 export { BAND6 } from './band6.js'
+export { CAPS5 } from './caps5.js'
 export { SLIM5 } from './slim5.js'
 export { TALL7 } from './tall7.js'
 export * as kern from './kern.js'

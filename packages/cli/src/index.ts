@@ -7,6 +7,7 @@
  *   bun cli broadcast "HI"   set your text on every new pair in range
  *   bun cli edge             trace the panel silhouette
  *   bun cli bench            measure the real frame rate
+ *   bun cli speed            step through every SPEED the firmware has
  *   bun cli off              blank the panel
  *   bun cli ledger           flash saves counted against each unit
  *   bun cli patch status     what slot a crew unit is carrying, if any
@@ -15,6 +16,7 @@ import { Grid, budget, display, font, jgx, protocol as p } from '@joggles/core'
 import { type BroadcastOptions, broadcast, frameFor } from './broadcast.js'
 import { open, sleep } from './glasses.js'
 import { LEDGER_FILE, allDevices } from './ledger.js'
+import { sweepSpeed } from './speedsweep.js'
 
 async function cmdText(text: string): Promise<void> {
   const bitmap = font.textBitmap(text)
@@ -168,6 +170,26 @@ async function cmdStress(): Promise<void> {
 }
 
 /**
+ * Step through every `SPEED` the firmware has, then past the top of the ladder.
+ *
+ * The phone's speed control is generated from `protocol.SPEED_STEPS`, which is read
+ * out of a disassembly. This is how that reading stops being *derived*. One flash
+ * write at the start and none after it; `speedsweep.ts` has the reasoning.
+ *
+ *   bun cli speed                        default text, 6s a step
+ *   bun cli speed "SO FAST" --hold 3000  your text, faster to sit through
+ */
+async function cmdSpeed(rest: string[]): Promise<void> {
+  const words: string[] = []
+  let holdMs: number | undefined
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '--hold') holdMs = Number(rest[++i])
+    else words.push(rest[i])
+  }
+  await sweepSpeed({ text: words.join(' ') || undefined, holdMs })
+}
+
+/**
  * Ask a unit what firmware it carries.
  *
  * The first thing to run against a freshly flashed unit, and the only check that
@@ -258,6 +280,9 @@ try {
     case 'bench':
       await cmdBench()
       break
+    case 'speed':
+      await cmdSpeed(rest)
+      break
     case 'ledger':
       await cmdLedger()
       break
@@ -267,7 +292,7 @@ try {
       process.exit(await (await import('./patch.js')).runCli(rest))
     default:
       console.log(
-        'usage: bun cli <probe|text|broadcast|edge|off|bench|stress|ledger> [args]',
+        'usage: bun cli <probe|text|broadcast|edge|off|bench|speed|stress|ledger> [args]',
       )
       console.log('       bun cli patch <status|check|send|commit|abort> [args]')
       process.exit(1)

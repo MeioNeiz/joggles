@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { COLS, ROWS, alive } from './display.js'
 import * as font from './font.js'
 import { BAND5 } from './fonts/band5.js'
+import { BAND6 } from './fonts/band6.js'
 import { FONTS } from './fonts/fit.js'
 import * as kern from './fonts/kern.js'
 import { staticText } from './fonts/place.js'
@@ -63,14 +64,17 @@ test('no two glyphs in a font render identically', () => {
   }
 })
 
+// band5 is named throughout this test rather than left to the default. What it
+// asserts is the row order, and `F`'s bitmap is band5's; reading it through the
+// bare API tied a statement about flipping to whichever face was default.
 test('glyphs are stored top row first and come back bottom row first', () => {
   expect(BAND5.glyphs.F).toEqual(['###', '#..', '##.', '#..', '#..'])
-  expect(font.glyph('F')[0]).toEqual([1, 0, 0])
-  expect(font.glyph('F')[4]).toEqual([1, 1, 1])
+  expect(font.glyph('F', BAND5)[0]).toEqual([1, 0, 0])
+  expect(font.glyph('F', BAND5)[4]).toEqual([1, 1, 1])
 })
 
 test('an unknown character falls back, and a missing case folds', () => {
-  expect(font.width('é')).toBe(kern.glyphWidth(BAND5.fallback))
+  expect(font.width('é', BAND5)).toBe(kern.glyphWidth(BAND5.fallback))
   // tall7 carries no lowercase at all, so folding is the only reason 'ok' renders.
   expect(font.textBitmap('ok', { font: TALL7 })).toEqual(
     font.textBitmap('OK', { font: TALL7 }),
@@ -96,7 +100,8 @@ test('textWidth is the width of the bitmap textBitmap returns, always', () => {
 test('the spacing argument is still a bare number, as every caller passes it', () => {
   expect(font.textWidth('HI', 3)).toBe(font.textWidth('HI', { spacing: 3 }))
   expect(font.textWidth('HI', 3)).toBeGreaterThan(font.textWidth('HI', 1))
-  expect(font.textWidth('F')).toBe(3)
+  // 3 is band5's F. Named, because this test is about the argument form.
+  expect(font.textWidth('F', { font: BAND5 })).toBe(3)
 })
 
 test('measuring a single glyph is its own width, kerned or not', () => {
@@ -128,6 +133,28 @@ test('no kerned pair puts two glyphs closer than the base spacing', () => {
           expect(`${f.name} "${a}${b}" row ${t} clear ${clear}`).toBe(
             `${f.name} "${a}${b}" row ${t} clear ${Math.max(clear, f.spacing)}`,
           )
+        }
+        // And the same for ink one row apart. Checking rows independently passes a
+        // pair whose ink ends up diagonally adjacent, which on round LEDs closes
+        // the gap just as completely: "JACOB" read as JAC0B with C and O fused,
+        // and every per-row assertion above was satisfied while it did.
+        for (let t = 0; t + 1 < f.height; t++) {
+          const upper = inkAt(list[0], xs[0], t)
+          const lower = inkAt(list[1], xs[1], t + 1)
+          if (upper.length && lower.length) {
+            const clear = Math.min(...lower) - Math.max(...upper) - 1
+            expect(`${f.name} "${a}${b}" rows ${t}/${t + 1} clear ${clear}`).toBe(
+              `${f.name} "${a}${b}" rows ${t}/${t + 1} clear ${Math.max(clear, 0)}`,
+            )
+          }
+          const above = inkAt(list[1], xs[1], t)
+          const below = inkAt(list[0], xs[0], t + 1)
+          if (above.length && below.length) {
+            const clear = Math.min(...above) - Math.max(...below) - 1
+            expect(`${f.name} "${a}${b}" rows ${t + 1}/${t} clear ${clear}`).toBe(
+              `${f.name} "${a}${b}" rows ${t + 1}/${t} clear ${Math.max(clear, 0)}`,
+            )
+          }
         }
       }
     }
@@ -197,8 +224,10 @@ test('a font may only claim it scrolls if its whole band has an LED in every col
   }
 })
 
+// band5 is named so the expected bitmap stays the one being described: these are
+// band5's 3-wide A, and the point of the test is the third argument.
 test('panelBitmap still takes an explicit baseline as its third argument', () => {
-  const at = font.panelBitmap('A', 1, 0)
+  const at = font.panelBitmap('A', { font: BAND5, spacing: 1 }, 0)
   expect(at[0]).toEqual([1, 0, 1]) // A's feet, on panel row 0
   expect(at[4]).toEqual([0, 1, 0]) // its apex, five rows up
   expect(at[5].every((v) => v === 0)).toBe(true)
@@ -299,24 +328,83 @@ test('an item with no font stored, or an unknown one, reads as band5 for ever', 
   expect(font.fontByName('')).toBe(BAND5)
   expect(font.fontByName('band-5')).toBe(BAND5)
   expect(font.fontByName('helvetica')).toBe(BAND5)
-  expect(font.DEFAULT_FONT).toBe(BAND5)
+})
+
+// Separated from the legacy test above on purpose. Those two answer different
+// questions - what an old item reads as, and what a new one starts as - and
+// asserting both in one test is what made the default look load-bearing for
+// stored content when it never was.
+test('a new item starts in band6, and old items are unaffected by that', () => {
+  expect(font.DEFAULT_FONT).toBe(BAND6)
+  expect(font.LEGACY_FONT).toBe(BAND5)
+  expect(font.DEFAULT_FONT).not.toBe(font.LEGACY_FONT)
+})
+
+/**
+ * The property the default is chosen for, asserted so it cannot quietly regress.
+ *
+ * At 24 columns of one-bit ink on a panel that scrolls, two glyphs a single pixel
+ * apart are a coin toss, and the source of a bitmap font looks equally fine
+ * either way: this is exactly the class of bug that reading cannot catch. band5
+ * has ten such pairs and slim5 fifteen, which is why neither is the default;
+ * band6 has none.
+ *
+ * Deliberately only checked for `DEFAULT_FONT`, not for every face. band5's
+ * glyphs are frozen because changing one re-renders and re-prices every item ever
+ * saved, so its ten pairs are a fact to be routed around rather than a failure to
+ * be fixed here.
+ */
+test('no two letters or digits in the default face are within one pixel', () => {
+  const f = font.DEFAULT_FONT
+  const chars = [...'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789']
+  const offenders: string[] = []
+  for (let i = 0; i < chars.length; i++) {
+    for (let j = i + 1; j < chars.length; j++) {
+      const a = font.kern.glyphRows(f, chars[i])
+      const b = font.kern.glyphRows(f, chars[j])
+      // Only comparable in the same box; a different width is already a difference
+      // a reader can see.
+      if (a.length !== b.length || a[0].length !== b[0].length) continue
+      let apart = 0
+      for (let r = 0; r < a.length; r++) {
+        for (let c = 0; c < a[0].length; c++) if (a[r][c] !== b[r][c]) apart++
+      }
+      if (apart > 0 && apart < 2) offenders.push(`${chars[i]}/${chars[j]}`)
+    }
+  }
+  expect(offenders).toEqual([])
 })
 
 // band5's widths decide, for every text item ever saved, whether it is still and
 // free or scrolling and five page erases. Changing a glyph in it silently
 // re-renders and sometimes re-prices old content, which is why the new faces
 // were added beside it. These numbers are that promise, written down.
+//
+// The face is named explicitly. This measured through the bare `textWidth(s)`
+// until 2026-08-14, which reads `DEFAULT_FONT`, so a promise specifically about
+// band5 was resting on band5 happening to be the default. It broke the moment the
+// default moved to band6, correctly: the numbers below are band5's, and now the
+// test asks band5 for them.
+// Three of these grew by one to four columns on 2026-08-14, and that was a
+// deliberate re-pricing rather than a drift: `kern.tuckLimit` now refuses a tuck
+// that would leave two glyphs diagonally adjacent, which is what made `C` and `O`
+// join in "JACOB" on the panel. 'Hello there' 37->38, 'FUNKY GLASSES' 49->50,
+// 'GLASSES-125B37' 51->55. Across a 35-message corpus one message crossed the
+// free-or-flash line in this face, "LOOK UP" at 24->25, so a saved item sitting
+// exactly on 24 columns can now cost five page erases where it used to be free.
+// That is the price of the fix and it is written down here rather than discovered.
 test('band5 measures what it has always measured', () => {
   const frozen: Array<[string, number]> = [
     ['JOGGLE', 23],
     ['JOGGLES', 27],
-    ['Hello there', 37],
-    ['FUNKY GLASSES', 49],
-    ['GLASSES-125B37', 51],
+    ['Hello there', 38],
+    ['FUNKY GLASSES', 50],
+    ['GLASSES-125B37', 55],
     ['F', 3],
   ]
   for (const [s, want] of frozen) {
-    expect(`band5 "${s}" ${font.textWidth(s)}`).toBe(`band5 "${s}" ${want}`)
+    const got = font.textWidth(s, { font: BAND5 })
+    expect(`band5 "${s}" ${got}`).toBe(`band5 "${s}" ${want}`)
   }
 })
 
